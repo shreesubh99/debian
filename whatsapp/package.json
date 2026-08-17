@@ -1,0 +1,27 @@
+{
+  "name": "ytsk-whatsapp-bot-server",
+  "version": "1.0.0",
+  "description": "WhatsApp Client + PDF Invoice Generator Server using whatsapp-web.js & Puppeteer",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "npx puppeteer browsers install chrome",
+    "postinstall": "npx puppeteer browsers install chrome"
+  },
+  "dependencies": {
+    "@ngrok/ngrok": "^1.4.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "puppeteer": "^25.4.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

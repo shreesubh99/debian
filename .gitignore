@@ -1,0 +1,37 @@
+# Dependency Directories
+node_modules/
+venv/
+env/
+.venv/
+
+# Credentials and Keys
+.env
+.env.production
+.env.local
+
+# Session & Puppeteer Caches
+.puppeteer_cache/
+.wwebjs_cache/
+.wwebjs_auth/
+whatsapp/session/
+session/
+whatsapp/.wwebjs_cache/
+whatsapp/.wwebjs_auth/
+
+# Application Logs & Transcripts
+conversations/
+agent/conversations/
+whatsapp/sent_log.json
+sent_log.json
+*.log
+*.json.bak
+
+# Python compilation files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Operating system files
+.DS_Store
+Thumbs.db

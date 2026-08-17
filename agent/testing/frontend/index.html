@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shree Shubh Travel - AI Customer Agent Tester</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar / Left Panel -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <i class="fa-solid fa-plane-departure brand-icon"></i>
+                    <div>
+                        <h2>Shubh Travel</h2>
+                        <span class="sub-brand">AI Agent Core</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Testing Badge -->
+            <div class="test-badge-container">
+                <div class="test-badge">
+                    <span class="pulse-dot"></span>
+                    🧪 TEST MODE — READ ONLY
+                </div>
+            </div>
+
+            <!-- Customer Picker -->
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-users"></i> Target Customer</h3>
+                <div class="customer-selector-container">
+                    <select id="customer-select" class="form-control">
+                        <option value="MOCK">👤 Mock Customer (Rahul Test - 9999999999)</option>
+                    </select>
+                </div>
+                <button id="refresh-customers-btn" class="btn btn-secondary btn-sm mt-1">
+                    <i class="fa-solid fa-sync"></i> Refresh Customer List
+                </button>
+            </div>
+
+            <!-- Voice Settings -->
+            <div class="sidebar-section">
+                <h3><i class="fa-solid fa-volume-high"></i> Voice Settings</h3>
+                <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); padding: 12px; border-radius: 10px; border: 1px solid var(--border-color);">
+                    <span style="font-size: 13px;">Auto-Read Responses</span>
+                    <label class="switch">
+                        <input type="checkbox" id="auto-tts-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Sessions List -->
+            <div class="sidebar-section flex-grow">
+                <h3><i class="fa-solid fa-comments"></i> Active Test Sessions</h3>
+                <div id="sessions-list" class="sessions-list">
+                    <!-- Session items will be dynamically loaded here -->
+                </div>
+                <button id="new-chat-btn" class="btn btn-primary btn-block mt-2">
+                    <i class="fa-solid fa-plus"></i> New Chat Session
+                </button>
+            </div>
+
+            <div class="sidebar-footer">
+                <span>Shree Shubh Travel AI Agent v1.0</span>
+            </div>
+        </aside>
+
+        <!-- Main Chat Panel / Center Panel -->
+        <main class="chat-panel">
+            <header class="chat-header">
+                <div class="chat-customer-info">
+                    <div class="avatar">
+                        <i class="fa-solid fa-user"></i>
+                    </div>
+                    <div>
+                        <h3 id="current-customer-name">Mock Customer</h3>
+                        <span id="current-customer-phone">+91 99999 99999</span>
+                    </div>
+                </div>
+                <div class="chat-header-actions">
+                    <span class="badge badge-success">Active Session</span>
+                    <button id="clear-chat-btn" class="btn btn-danger-outline" title="Clear Chat History">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Chat Message List -->
+            <div id="chat-messages" class="chat-messages">
+                <div class="message system-msg">
+                    <div class="message-content">
+                        🔒 Secure testing environment initialized. All actions are simulated and strictly read-only.
+                    </div>
+                </div>
+                <!-- Chat messages loaded here -->
+            </div>
+
+            <!-- Typing Indicator -->
+            <div id="typing-indicator" class="typing-indicator hidden">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+            </div>
+
+            <!-- Chat Footer / Input -->
+            <footer class="chat-footer">
+                <form id="chat-form" class="chat-input-form">
+                    <input type="text" id="message-input" autocomplete="off" placeholder="Type a message (English, Hindi, or Hinglish)..." required>
+                    <button type="submit" id="send-btn" class="btn-send">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+            </footer>
+        </main>
+
+        <!-- Technical Testing Panel / Right Panel -->
+        <aside class="dev-panel">
+            <div class="dev-header">
+                <h2><i class="fa-solid fa-bug"></i> Developer Monitor</h2>
+            </div>
+
+            <!-- Session Info -->
+            <div class="dev-section">
+                <div class="meta-row">
+                    <span class="meta-label">Session ID:</span>
+                    <span id="meta-session-id" class="meta-value">TEST-SESSION-XYZ</span>
+                </div>
+                <div class="meta-row">
+                    <span class="meta-label">Mode:</span>
+                    <span class="meta-value text-warning">Read-Only</span>
+                </div>
+            </div>
+
+            <!-- Provider Live Status -->
+            <div class="dev-section">
+                <h3>AI Providers Status</h3>
+                <div class="provider-status-list">
+                    <div class="provider-status-item">
+                        <span class="status-indicator online"></span>
+                        <div class="provider-info">
+                            <span class="provider-name">Gemini 2.5 Flash</span>
+                            <span class="provider-role">Primary Model</span>
+                        </div>
+                    </div>
+                    <div class="provider-status-item">
+                        <span class="status-indicator online"></span>
+                        <div class="provider-info">
+                            <span class="provider-name">Gemini 2.5 Flash-Lite</span>
+                            <span class="provider-role">Secondary Model (Fallback 1)</span>
+                        </div>
+                    </div>
+                    <div class="provider-status-item">
+                        <span class="status-indicator online"></span>
+                        <div class="provider-info">
+                            <span class="provider-name">Groq Llama 3.3 70b</span>
+                            <span class="provider-role">Final Fallback Model</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Execution Metadata (Last Response) -->
+            <div class="dev-section">
+                <h3>Last Response Metadata</h3>
+                <div class="meta-grid">
+                    <div class="meta-card">
+                        <span class="card-label">Provider</span>
+                        <span id="res-provider" class="card-value">-</span>
+                    </div>
+                    <div class="meta-card">
+                        <span class="card-label">Model</span>
+                        <span id="res-model" class="card-value">-</span>
+                    </div>
+                    <div class="meta-card">
+                        <span class="card-label">Response Time</span>
+                        <span id="res-time" class="card-value">-</span>
+                    </div>
+                    <div class="meta-card">
+                        <span class="card-label">Fallback Used</span>
+                        <span id="res-fallback" class="card-value">-</span>
+                    </div>
+                </div>
+                <div class="meta-row mt-2">
+                    <span class="meta-label">Tools Executed:</span>
+                    <span id="res-tools" class="meta-value">-</span>
+                </div>
+            </div>
+
+            <!-- Activity Timeline -->
+            <div class="dev-section flex-grow" style="overflow: hidden; display: flex; flex-direction: column;">
+                <h3>Execution Timeline</h3>
+                <div id="timeline-log" class="timeline-log">
+                    <div class="timeline-empty">Send a message to monitor routing activities.</div>
+                </div>
+            </div>
+
+            <!-- Technical Error Panel (Raw Display) -->
+            <div class="dev-section dev-error-section hidden" id="error-section">
+                <div class="error-header">
+                    <h3><i class="fa-solid fa-circle-exclamation"></i> Raw Exception Trace</h3>
+                    <button class="btn btn-sm btn-danger-outline" id="clear-error-btn">Clear</button>
+                </div>
+                <div class="error-body">
+                    <div class="error-class" id="error-class">-</div>
+                    <div class="error-message" id="error-message">-</div>
+                    <pre class="error-traceback" id="error-traceback">-</pre>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Custom JS -->
+    <script src="/static/index.js?v=6"></script>
+</body>
+</html>
