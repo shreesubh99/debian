@@ -573,107 +573,100 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
         
     is_hindi_input = is_devanagari(user_message)
     if not has_name:
-        if state != "waiting_for_name":
-            # State 1: Name missing - set state and prompt the customer
-            memory.update_context(session_id, "state", "waiting_for_name")
-            memory.update_context(session_id, "name_reminder_count", 0)
+        # Run name extraction to check if they already provided their name in this message
+        timeline = []
+        start_time_extract = time.time()
+        timeline.append({
+            "timestamp": time.strftime("%H:%M:%S", time.localtime(start_time_extract)),
+            "event": f"Pre-extracting name from user response: '{user_message}'"
+        })
+        
+        extraction_prompt = [
+            {
+                "role": "user",
+                "content": (
+                    "Analyze the user's message. If the user is telling their name (e.g. 'Sajal', 'My name is Amit', 'अमित कुमार'), "
+                    "extract ONLY the name itself, with correct capitalization, and absolutely no other text.\n"
+                    "If the user is ignoring the name prompt and asking a query, booking a service, or talking about something else "
+                    "(e.g. 'ticket price?', 'train timing', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'.\n"
+                    "Message: '" + user_message + "'"
+                )
+            }
+        ]
+        
+        extracted_name = "Unknown"
+        try:
+            content, _, _, _, _, _, _, _ = call_llm_with_routing(
+                messages=extraction_prompt,
+                tools=[],
+                system_instruction="You are a precise name extractor. Extract the name and output nothing else.",
+                timeline=timeline
+            )
+            if content:
+                extracted_name = str(content).strip().replace(".", "").replace('"', '').replace("'", "")
+        except Exception as e:
+            print(f"[Name Extraction Error] Failed: {e}")
+            
+        if extracted_name and extracted_name.lower() not in ["unknown", "none", "null", "unrelated"]:
+            # Name successfully extracted! Save to DB, greet them, and reset state.
+            try:
+                from src.db_connection import execute_query
+                first_name = extracted_name.split()[0]
+                query = "UPDATE customers SET name = %s WHERE mobile = %s"
+                execute_query(query, (extracted_name, mobile_to_check))
+                print(f"[Name Check] Successfully saved customer name: '{extracted_name}' for mobile {mobile_to_check}")
+            except Exception as db_err:
+                print(f"[Name Check DB Error] Failed to save name: {db_err}")
+                
+            memory.update_context(session_id, "state", None)
             
             if is_hindi_input:
-                greeting = "नमस्ते! श्री शुभ ट्रेवल्स में आपका स्वागत है। आगे की बातचीत को सुचारू और विश्वासपूर्ण बनाने के लिए कृपया करके अपना नाम बता दीजिए।"
+                success_reply = f"धन्यवाद {first_name}! आपका नाम दर्ज कर लिया गया है। अब बताइए, मैं आपकी क्या सहायता कर सकता हूँ?"
             else:
-                greeting = "Hello! Shree Shubh Travels mein aapka swagat hai. Aage ki baat-jeet ko smooth aur helpful banane ke liye, please mujhe apna naam bata dijiye."
-            
-            # Record in memory
+                success_reply = f"Thank you {first_name}! Your name has been registered. Now tell me, how can I help you?"
+                
             memory.add_message(session_id, role="user", content=user_message)
-            memory.add_message(session_id, role="model", content=greeting)
+            memory.add_message(session_id, role="model", content=success_reply)
             save_conversation_to_file(session_id)
             
             return {
                 "session_id": session_id,
-                "response": greeting,
+                "response": success_reply,
                 "provider": "System",
                 "model": "System_PreCheck",
-                "response_time_ms": 0.0,
+                "response_time_ms": (time.time() - start_time_extract) * 1000,
                 "fallback_used": False,
                 "fallback_reason": None,
                 "called_tools": [],
-                "timeline": [{"timestamp": time.strftime("%H:%M:%S"), "event": "Pre-check: Name missing. Prompted customer for name."}]
+                "timeline": timeline
             }
+        elif extracted_name and extracted_name.lower() == "unrelated":
+            # If the user sent a query instead of their name, don't block them!
+            # Set state to waiting_for_name and increment reminder count, but pass through to let agent answer.
+            count = context.get("name_reminder_count", 0) + 1
+            memory.update_context(session_id, "state", "waiting_for_name")
+            memory.update_context(session_id, "name_reminder_count", count)
+            print(f"[Name Check] User sent unrelated query: '{user_message}'. Bypassing block. Reminder count: {count}")
+            pass
         else:
-            # State 2: Customer replied with their name - extract it using the LLM routing
-            timeline = []
-            start_time_extract = time.time()
-            timeline.append({
-                "timestamp": time.strftime("%H:%M:%S", time.localtime(start_time_extract)),
-                "event": f"Extracting name from user response: '{user_message}'"
-            })
-            
-            extraction_prompt = [
-                {
-                    "role": "user",
-                    "content": (
-                        "Analyze the user's message. If the user is telling their name (e.g. 'Sajal', 'My name is Amit', 'अमित कुमार'), "
-                        "extract ONLY the name itself, with correct capitalization, and absolutely no other text.\n"
-                        "If the user is ignoring the name prompt and asking a query, booking a service, or talking about something else "
-                        "(e.g. 'ticket price?', 'train timing', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'.\n"
-                        "Message: '" + user_message + "'"
-                    )
-                }
-            ]
-            
-            extracted_name = "Unknown"
-            try:
-                content, _, _, _, _, _, _, _ = call_llm_with_routing(
-                    messages=extraction_prompt,
-                    tools=[],
-                    system_instruction="You are a precise name extractor. Extract the name and output nothing else.",
-                    timeline=timeline
-                )
-                if content:
-                    extracted_name = str(content).strip().replace(".", "").replace('"', '').replace("'", "")
-            except Exception as e:
-                print(f"[Name Extraction Error] Failed: {e}")
+            # It is a simple greeting (like Hi/Hello) or name could not be extracted.
+            if state != "waiting_for_name":
+                # Prompt them for their name (State 1)
+                memory.update_context(session_id, "state", "waiting_for_name")
+                memory.update_context(session_id, "name_reminder_count", 0)
                 
-            if extracted_name and extracted_name.lower() == "unrelated":
-                # User ignored the name prompt and asked a query instead.
-                # Skip the pre-check return and proceed directly to the main conversation flow!
-                # Keep state as 'waiting_for_name' so we can try again on the next turn.
-                count = context.get("name_reminder_count", 0) + 1
-                memory.update_context(session_id, "name_reminder_count", count)
-                print(f"[Name Check] User sent unrelated query: '{user_message}'. Bypassing name prompt intercept. Reminder count: {count}")
-                pass
-            elif extracted_name and extracted_name.lower() not in ["unknown", "none", "null"]:
-                # Save/Update in database
-                try:
-                    from src.db_connection import execute_query
-                    if customer:
-                        query = "UPDATE customers SET name = %s WHERE mobile = %s"
-                        execute_query(query, (extracted_name, mobile_to_check))
-                    else:
-                        cust_code = f"CUST_{mobile_to_check[-4:]}"
-                        query = "INSERT INTO customers (mobile, name, customer_code) VALUES (%s, %s, %s)"
-                        execute_query(query, (mobile_to_check, extracted_name, cust_code))
-                    print(f"[Name Check] Successfully saved customer name: '{extracted_name}' for mobile {mobile_to_check}")
-                except Exception as db_err:
-                    print(f"[Name Check DB Error] Failed to save name: {db_err}")
-                    
-                # Reset state in memory
-                memory.update_context(session_id, "state", None)
-                
-                # Use only the first word (starting word) of the extracted name
-                first_name = extracted_name.split()[0] if extracted_name else ""
                 if is_hindi_input:
-                    success_reply = f"धन्यवाद {first_name}! आपका नाम दर्ज कर लिया गया है। अब बताइए, मैं आपकी क्या सहायता कर सकता हूँ?"
+                    greeting = "नमस्ते! श्री शुभ ट्रेवल्स में आपका स्वागत है। आगे की बातचीत को सुचारू और विश्वासपूर्ण बनाने के लिए कृपया करके अपना नाम बता दीजिए।"
                 else:
-                    success_reply = f"Thank you {first_name}! Your name has been registered. Now tell me, how can I help you?"
-                    
+                    greeting = "Hello! Shree Shubh Travels mein aapka swagat hai. Aage ki baat-jeet ko smooth aur helpful banane ke liye, please mujhe apna naam bata dijiye."
+                
                 memory.add_message(session_id, role="user", content=user_message)
-                memory.add_message(session_id, role="model", content=success_reply)
+                memory.add_message(session_id, role="model", content=greeting)
                 save_conversation_to_file(session_id)
                 
                 return {
                     "session_id": session_id,
-                    "response": success_reply,
+                    "response": greeting,
                     "provider": "System",
                     "model": "System_PreCheck",
                     "response_time_ms": (time.time() - start_time_extract) * 1000,
@@ -683,7 +676,7 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
                     "timeline": timeline
                 }
             else:
-                # Ask again if name couldn't be extracted
+                # They were already prompted, but replied with another greeting or invalid name text. Ask again.
                 if is_hindi_input:
                     ask_again = "कृपया अपना सही नाम बताएं ताकि हम बातचीत शुरू कर सकें।"
                 else:
