@@ -107,14 +107,51 @@ if [ -f "${ROOT_DIR}/.env" ]; then
     sed -i 's/\r$//' "${ROOT_DIR}/.env"
 fi
 
-# Automatically configure Gemini as the primary provider
+# Automatically configure Gemini as the primary provider (Lite version for higher quota)
 if [ -f "${ROOT_DIR}/.env" ]; then
-    echo "Automatically configuring Gemini 3.5 Flash as the primary provider..."
+    echo "Automatically configuring Gemini 3.5 Flash Lite as the primary provider..."
     sed -i 's|^PRIMARY_PROVIDER=.*|PRIMARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
-    sed -i 's|^PRIMARY_MODEL=.*|PRIMARY_MODEL=gemini-3.5-flash|' "${ROOT_DIR}/.env"
+    sed -i 's|^PRIMARY_MODEL=.*|PRIMARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
     sed -i 's|^SECONDARY_PROVIDER=.*|SECONDARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
-    sed -i 's|^SECONDARY_MODEL=.*|SECONDARY_MODEL=gemini-3.5-flash|' "${ROOT_DIR}/.env"
+    sed -i 's|^SECONDARY_MODEL=.*|SECONDARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
     sed -i 's|^GROQ_MODEL=.*|GROQ_MODEL=qwen/qwen3.6-27b|' "${ROOT_DIR}/.env"
+fi
+
+# Interactive API Key Prompting during setup
+if [ -f "${ROOT_DIR}/.env" ]; then
+    # Read current keys
+    CURRENT_GEMINI=$(grep "^GEMINI_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+    CURRENT_GROQ=$(grep "^GROQ_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+    
+    # Check if Gemini key is incomplete
+    if [[ "$CURRENT_GEMINI" == *"___"* ]] || [[ "$CURRENT_GEMINI" == *"YOUR_GEMINI"* ]] || [ -z "$CURRENT_GEMINI" ]; then
+        echo ""
+        echo "=========================================================="
+        echo "🔑 GEMINI_API_KEY is incomplete or not configured!"
+        echo "Please paste your COMPLETE Google Gemini API key:"
+        echo "=========================================================="
+        read -r USER_GEMINI
+        USER_GEMINI=$(echo "$USER_GEMINI" | tr -d '\r' | xargs)
+        if [ -n "$USER_GEMINI" ]; then
+            sed -i "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$USER_GEMINI|" "${ROOT_DIR}/.env"
+            echo "✅ Gemini API Key updated."
+        fi
+    fi
+    
+    # Check if Groq key is incomplete
+    if [[ "$CURRENT_GROQ" == *"___"* ]] || [[ "$CURRENT_GROQ" == *"YOUR_GROQ"* ]] || [ -z "$CURRENT_GROQ" ]; then
+        echo ""
+        echo "=========================================================="
+        echo "🔑 GROQ_API_KEY is incomplete or not configured!"
+        echo "Please paste your COMPLETE Groq API key:"
+        echo "=========================================================="
+        read -r USER_GROQ
+        USER_GROQ=$(echo "$USER_GROQ" | tr -d '\r' | xargs)
+        if [ -n "$USER_GROQ" ]; then
+            sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$USER_GROQ|" "${ROOT_DIR}/.env"
+            echo "✅ Groq API Key updated."
+        fi
+    fi
 fi
 
 # API keys are pre-configured in .env.example templates for fully automated startup
@@ -335,13 +372,18 @@ sudo systemctl enable ytsk-wifi-monitor.service
 echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
 echo ""
 
+# Restart the services automatically so they run instantly on setup completion
+echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
+sudo systemctl restart ytsk-bot.service
+sudo systemctl restart ytsk-wifi-monitor.service
+
 echo "=========================================================="
 echo "           SETUP COMPLETED SUCCESSFULLY!                 "
 echo "=========================================================="
-echo "IMPORTANT: Please edit '${ROOT_DIR}/.env'"
-echo "and add your GEMINI_API_KEY and other details before running."
-echo "Command: nano '${ROOT_DIR}/.env'"
+echo "Your WhatsApp Bot and Python AI Agent services are now running!"
+echo "Check bot status by running:"
+echo "  sudo systemctl status ytsk-bot.service"
 echo ""
-echo "To start both servers concurrently with a single command:"
-echo "cd '${ROOT_DIR}' && npm start"
+echo "Or check live logs by running:"
+echo "  sudo journalctl -u ytsk-bot.service -f"
 echo "=========================================================="
