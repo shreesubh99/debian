@@ -7,12 +7,16 @@ def get_customer(customer_id_or_mobile: str) -> Dict[str, Any]:
     Returns customer details if found, or an empty dictionary.
     """
     # Safe query, read-only
+    clean_digits = "".join(c for c in str(customer_id_or_mobile) if c.isdigit())
+    last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else customer_id_or_mobile
+    with_country = "91" + last_10 if len(clean_digits) >= 10 else customer_id_or_mobile
+    
     query = """
         SELECT id, customer_code, name, mobile, email, created_at, booking_source, origin_sector 
         FROM customers 
-        WHERE mobile = %s OR id = %s OR customer_code = %s
+        WHERE mobile = %s OR mobile = %s OR mobile = %s OR id = %s OR customer_code = %s
     """
-    rows = execute_query(query, (customer_id_or_mobile, customer_id_or_mobile, customer_id_or_mobile))
+    rows = execute_query(query, (customer_id_or_mobile, last_10, with_country, customer_id_or_mobile, customer_id_or_mobile))
     
     if rows:
         return rows[0]
@@ -23,24 +27,28 @@ def get_customer_balance(customer_id_or_mobile: str) -> Dict[str, Any]:
     Get the outstanding balance for a customer.
     Returns a dictionary with outstanding balance and details.
     """
+    clean_digits = "".join(c for c in str(customer_id_or_mobile) if c.isdigit())
+    last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else customer_id_or_mobile
+    with_country = "91" + last_10 if len(clean_digits) >= 10 else customer_id_or_mobile
+
     # Get total outstanding balance from debtors (PENDING or PARTIAL status)
     # Total outstanding is defined as amount_due - settled_amount
     query_total = """
         SELECT SUM(amount_due - settled_amount) AS outstanding_balance 
         FROM debtors 
-        WHERE (mobile = %s OR customer_id = %s) AND status IN ('PENDING', 'PARTIAL')
+        WHERE (mobile = %s OR mobile = %s OR mobile = %s OR customer_id = %s) AND status IN ('PENDING', 'PARTIAL')
     """
-    rows_total = execute_query(query_total, (customer_id_or_mobile, customer_id_or_mobile))
+    rows_total = execute_query(query_total, (customer_id_or_mobile, last_10, with_country, customer_id_or_mobile))
     
     # Get detailed list of outstanding transactions
     query_details = """
         SELECT debtor_id, pnr_no, amount_due, settled_amount, (amount_due - settled_amount) AS outstanding, 
                due_date, source, destination, train_no, travel_date, status, remarks 
         FROM debtors 
-        WHERE (mobile = %s OR customer_id = %s) AND status IN ('PENDING', 'PARTIAL')
+        WHERE (mobile = %s OR mobile = %s OR mobile = %s OR customer_id = %s) AND status IN ('PENDING', 'PARTIAL')
         ORDER BY due_date DESC
     """
-    rows_details = execute_query(query_details, (customer_id_or_mobile, customer_id_or_mobile))
+    rows_details = execute_query(query_details, (customer_id_or_mobile, last_10, with_country, customer_id_or_mobile))
     
     # Get customer metadata for verification
     customer = get_customer(customer_id_or_mobile)
@@ -63,46 +71,60 @@ def get_booking_status(booking_id_or_pnr: str) -> Dict[str, Any]:
     """
     # Check ticket_transactions
     query_ticket = """
-        SELECT ticket_id, ticket_no AS pnr_no, route, class, ticket_amount, ticket_type, 
-               pnr_cancel, payment_mode, created_at, train_no, train_name, passenger_count, 
-               book_date, travel_date, mobile, customer_id 
+        SELECT ticket_id, ticket_no, passenger_details, amount_due, settled_amount, 
+               travel_date, status, remarks, created_at, source, destination, pnr_no 
         FROM ticket_transactions 
-        WHERE ticket_no = %s OR ticket_id = %s
+        WHERE pnr_no = %s OR ticket_id = %s OR ticket_no = %s
     """
-    rows_ticket = execute_query(query_ticket, (booking_id_or_pnr, booking_id_or_pnr))
+    rows_ticket = execute_query(query_ticket, (booking_id_or_pnr, booking_id_or_pnr, booking_id_or_pnr))
     
-    # Check outstanding payment status in debtors
-    query_debtor = """
-        SELECT debtor_id, debtor_name, mobile, amount_due, settled_amount, status, due_date, remarks 
+    # Check debtors ledger
+    query_debt = """
+        SELECT debtor_id, pnr_no, amount_due, settled_amount, status, travel_date, travel_date AS created_at, 
+               source, destination, remarks 
         FROM debtors 
-        WHERE pnr_no = %s
+        WHERE pnr_no = %s OR debtor_id = %s
     """
-    rows_debtor = execute_query(query_debtor, (booking_id_or_pnr,))
+    rows_debt = execute_query(query_debt, (booking_id_or_pnr, booking_id_or_pnr))
     
-    if not rows_ticket and not rows_debtor:
-        return {}
+    if rows_ticket:
+        row = rows_ticket[0]
+        # Calculate outstanding
+        due = float(row.get("amount_due") or 0.0)
+        settled = float(row.get("settled_amount") or 0.0)
+        outstanding = due - settled
         
-    ticket_info = rows_ticket[0] if rows_ticket else {}
-    debtor_info = rows_debtor[0] if rows_debtor else {}
-    
-    # Consolidate status
-    pnr_cancel = ticket_info.get("pnr_cancel", 0)
-    ticket_type = ticket_info.get("ticket_type", "SALE")
-    
-    status = "Confirmed"
-    if pnr_cancel == 1 or ticket_type == "CANCEL":
-        status = "Cancelled"
-    
-    return {
-        "pnr_no": ticket_info.get("pnr_no", booking_id_or_pnr),
-        "ticket_status": status,
-        "booking_details": ticket_info,
-        "payment_status": debtor_info.get("status", "No Outstanding Record"),
-        "amount_due": float(debtor_info.get("amount_due", 0.0)) if debtor_info else 0.0,
-        "settled_amount": float(debtor_info.get("settled_amount", 0.0)) if debtor_info else 0.0,
-        "outstanding": float(debtor_info.get("amount_due", 0.0) - debtor_info.get("settled_amount", 0.0)) if debtor_info else 0.0,
-        "remarks": debtor_info.get("remarks", "")
-    }
+        return {
+            "type": "ticket",
+            "pnr_no": row.get("pnr_no") or row.get("ticket_no"),
+            "amount_due": due,
+            "settled_amount": settled,
+            "outstanding": outstanding,
+            "travel_date": row.get("travel_date"),
+            "status": row.get("status"),
+            "remarks": row.get("remarks"),
+            "created_at": row.get("created_at"),
+            "route": f"{row.get('source')} to {row.get('destination')}" if row.get("source") else "Unknown"
+        }
+    elif rows_debt:
+        row = rows_debt[0]
+        due = float(row.get("amount_due") or 0.0)
+        settled = float(row.get("settled_amount") or 0.0)
+        outstanding = due - settled
+        
+        return {
+            "type": "debtor_ledger",
+            "pnr_no": row.get("pnr_no"),
+            "amount_due": due,
+            "settled_amount": settled,
+            "outstanding": outstanding,
+            "travel_date": row.get("travel_date"),
+            "status": row.get("status"),
+            "remarks": row.get("remarks"),
+            "created_at": row.get("created_at"),
+            "route": f"{row.get('source')} to {row.get('destination')}" if row.get("source") else "Unknown"
+        }
+    return {}
 
 def get_ticket_details(booking_id_or_pnr: str) -> Dict[str, Any]:
     """
@@ -115,26 +137,30 @@ def get_customer_history(customer_id_or_mobile: str) -> Dict[str, Any]:
     """
     Retrieve customer transaction and ticket history.
     """
+    clean_digits = "".join(c for c in str(customer_id_or_mobile) if c.isdigit())
+    last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else customer_id_or_mobile
+    with_country = "91" + last_10 if len(clean_digits) >= 10 else customer_id_or_mobile
+
     # Retrieve tickets
     query_tickets = """
         SELECT ticket_id, ticket_no AS pnr_no, route, class, ticket_amount, ticket_type, 
                train_no, train_name, travel_date, created_at 
         FROM ticket_transactions 
-        WHERE mobile = %s OR customer_id = %s
+        WHERE mobile = %s OR mobile = %s OR mobile = %s OR customer_id = %s
         ORDER BY travel_date DESC
         LIMIT 10
     """
-    rows_tickets = execute_query(query_tickets, (customer_id_or_mobile, customer_id_or_mobile))
+    rows_tickets = execute_query(query_tickets, (customer_id_or_mobile, last_10, with_country, customer_id_or_mobile))
     
     # Retrieve past ledger entries in debtors (settled or written off)
     query_past_debt = """
         SELECT debtor_id, pnr_no, amount_due, settled_amount, settled_date, status, remarks 
         FROM debtors 
-        WHERE (mobile = %s OR customer_id = %s) AND status IN ('SETTLED', 'WRITTEN_OFF')
+        WHERE (mobile = %s OR mobile = %s OR mobile = %s OR customer_id = %s) AND status IN ('SETTLED', 'WRITTEN_OFF')
         ORDER BY settled_date DESC
         LIMIT 10
     """
-    rows_past_debt = execute_query(query_past_debt, (customer_id_or_mobile, customer_id_or_mobile))
+    rows_past_debt = execute_query(query_past_debt, (customer_id_or_mobile, last_10, with_country, customer_id_or_mobile))
     
     customer = get_customer(customer_id_or_mobile)
     

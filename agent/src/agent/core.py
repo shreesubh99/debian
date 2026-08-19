@@ -663,8 +663,13 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
             try:
                 from src.db_connection import execute_query
                 first_name = extracted_name.split()[0]
-                query = "UPDATE customers SET name = %s WHERE mobile = %s"
-                execute_query(query, (extracted_name, mobile_to_check))
+                
+                clean_digits = "".join(c for c in str(mobile_to_check) if c.isdigit())
+                last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile_to_check
+                with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile_to_check
+                
+                query = "UPDATE customers SET name = %s WHERE mobile = %s OR mobile = %s OR mobile = %s"
+                execute_query(query, (extracted_name, mobile_to_check, last_10, with_country))
                 print(f"[Name Check] Successfully saved customer name: '{extracted_name}' for mobile {mobile_to_check}")
             except Exception as db_err:
                 print(f"[Name Check DB Error] Failed to save name: {db_err}")
