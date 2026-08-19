@@ -354,7 +354,17 @@ function createWhatsAppClient() {
                                 const userMessage = msg.body;
                                 if (!userMessage) continue;
                                 
-                                const cleanMobile = msg.from.replace('@c.us', '');
+                                let cleanMobile = msg.from.replace('@c.us', '');
+                                if (msg.from.includes('@lid')) {
+                                    try {
+                                        const contact = await msg.getContact();
+                                        if (contact && contact.number) {
+                                            cleanMobile = contact.number;
+                                        }
+                                    } catch (err) {
+                                        console.error('[LID Resolution Error] Failed to fetch contact number during catchup:', err.message);
+                                    }
+                                }
                                 console.log(`[Offline Catchup] Found unread message from ${cleanMobile}: "${userMessage}"`);
                                 
                                 // Send apology reply
@@ -396,7 +406,17 @@ function createWhatsAppClient() {
         const userMessage = msg.body;
         if (!userMessage) return;
 
-        const cleanMobile = msg.from.replace('@c.us', '');
+        let cleanMobile = msg.from.replace('@c.us', '');
+        if (msg.from.includes('@lid')) {
+            try {
+                const contact = await msg.getContact();
+                if (contact && contact.number) {
+                    cleanMobile = contact.number;
+                }
+            } catch (err) {
+                console.error('[LID Resolution Error] Failed to fetch contact number:', err.message);
+            }
+        }
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
 
         // Check if customer is already in active sessions
