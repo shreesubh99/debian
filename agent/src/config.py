@@ -32,8 +32,42 @@ def _get_clean_env(key: str, default: str = "") -> str:
             print(f"[Config] Loaded {key}: [EMPTY/MISSING]")
         return default
 
+def _ensure_gemini_api_key() -> str:
+    key = _get_clean_env("GEMINI_API_KEY", "")
+    placeholder_values = ["your_gemini_api_key", "your_gemini_api_key_here", ""]
+    
+    if not key or key.strip().lower() in placeholder_values:
+        import sys
+        if sys.stdin.isatty():
+            print("\n" + "="*60)
+            print("🔑 GEMINI_API_KEY is not configured in .env!")
+            print("Please paste your Google Gemini API key to continue setup.")
+            print("="*60 + "\n")
+            try:
+                user_key = input("Enter Gemini API Key: ").strip().replace('"', '').replace("'", "")
+                if user_key and user_key.lower() not in placeholder_values:
+                    if os.path.exists(env_path):
+                        lines = open(env_path, "r", encoding="utf-8").read().splitlines()
+                        updated = False
+                        for i, line in enumerate(lines):
+                            if line.startswith("GEMINI_API_KEY="):
+                                lines[i] = f"GEMINI_API_KEY={user_key}"
+                                updated = True
+                        if not updated:
+                            lines.append(f"GEMINI_API_KEY={user_key}")
+                        open(env_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+                        print(f"✅ Success! Gemini API Key written permanently to: {env_path}")
+                        return user_key
+            except Exception as e:
+                print(f"Error saving key: {e}")
+        else:
+            print("\n[Config ERROR] GEMINI_API_KEY is not configured and stdin is not a terminal.")
+            print("Please set GEMINI_API_KEY in your .env file manually or run the setup interactively.\n")
+            
+    return key
+
 class Config:
-    GEMINI_API_KEY = _get_clean_env("GEMINI_API_KEY", "")
+    GEMINI_API_KEY = _ensure_gemini_api_key()
     GROQ_API_KEY = _get_clean_env("GROQ_API_KEY", "")
 
     PRIMARY_PROVIDER = _get_clean_env("PRIMARY_PROVIDER", "gemini")
