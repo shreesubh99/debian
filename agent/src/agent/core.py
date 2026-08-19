@@ -54,11 +54,29 @@ def call_llm_with_routing(
     Executes model routing: Primary Gemini -> Secondary Gemini -> Groq.
     Updates the timeline list with precise timestamps and latency.
     """
-    # Dynamically build providers queue: Gemini Primary -> Gemini Secondary -> 10 Groq Fallbacks
-    providers_queue = [
-        ("primary_gemini", primary_provider, 10.0),
-        ("secondary_gemini", secondary_provider, 10.0)
+    # Dynamically build providers queue: Gemini Pool -> Groq Fallbacks
+    providers_queue = []
+    
+    # 1. Build Gemini fallback models queue
+    gemini_models = [Config.PRIMARY_MODEL, Config.SECONDARY_MODEL]
+    extra_gemini = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-1.5-pro"
     ]
+    for m in extra_gemini:
+        if m not in gemini_models:
+            gemini_models.append(m)
+            
+    for idx, model_id in enumerate(gemini_models):
+        if Config.GEMINI_API_KEY:
+            providers_queue.append((
+                f"gemini_tier_{idx+1}_{model_id}",
+                GeminiProvider(Config.GEMINI_API_KEY, model_id),
+                10.0
+            ))
     
     # Groq Active Models in priority order
     groq_models = [
