@@ -84,7 +84,7 @@ def call_llm_with_routing(
             providers_queue.append((
                 f"gemini_tier_{idx+1}_{model_id}",
                 GeminiProvider(Config.GEMINI_API_KEY, model_id),
-                10.0
+                4.0
             ))
     
     # Groq Active Models in priority order
@@ -102,7 +102,7 @@ def call_llm_with_routing(
             providers_queue.append((
                 f"groq_fallback_{idx+1}_{model_id}", 
                 GroqProvider(Config.GROQ_API_KEY, model_id), 
-                8.0
+                3.0
             ))
             
     last_error = None
