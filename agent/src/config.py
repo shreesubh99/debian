@@ -69,9 +69,46 @@ def _ensure_gemini_api_key() -> str:
             
     return key
 
+def _ensure_groq_api_key() -> str:
+    key = _get_clean_env("GROQ_API_KEY", "")
+    placeholder_values = ["your_groq_api_key", "your_groq_api_key_here", ""]
+    
+    is_incomplete = "___" in key or not key or key.strip().lower() in placeholder_values
+    
+    if is_incomplete:
+        import sys
+        if sys.stdin.isatty():
+            print("\n" + "="*60)
+            print("🔑 GROQ_API_KEY is incomplete or not configured in .env!")
+            print(f"Current value in .env: {key}")
+            print("Please paste your COMPLETE Groq API key to continue setup.")
+            print("="*60 + "\n")
+            try:
+                user_key = input("Enter Complete Groq API Key: ").strip().replace('"', '').replace("'", "")
+                if user_key and user_key.lower() not in placeholder_values and "___" not in user_key:
+                    if os.path.exists(env_path):
+                        lines = open(env_path, "r", encoding="utf-8").read().splitlines()
+                        updated = False
+                        for i, line in enumerate(lines):
+                            if line.startswith("GROQ_API_KEY="):
+                                lines[i] = f"GROQ_API_KEY={user_key}"
+                                updated = True
+                        if not updated:
+                            lines.append(f"GROQ_API_KEY={user_key}")
+                        open(env_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+                        print(f"✅ Success! Groq API Key written permanently to: {env_path}")
+                        return user_key
+            except Exception as e:
+                print(f"Error saving key: {e}")
+        else:
+            print("\n[Config ERROR] GROQ_API_KEY is incomplete and stdin is not a terminal.")
+            print("Please set GROQ_API_KEY in your .env file manually or run the setup interactively.\n")
+            
+    return key
+
 class Config:
     GEMINI_API_KEY = _ensure_gemini_api_key()
-    GROQ_API_KEY = _get_clean_env("GROQ_API_KEY", "")
+    GROQ_API_KEY = _ensure_groq_api_key()
 
     PRIMARY_PROVIDER = _get_clean_env("PRIMARY_PROVIDER", "gemini")
     PRIMARY_MODEL = _get_clean_env("PRIMARY_MODEL", "gemini-1.5-flash")
