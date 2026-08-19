@@ -222,11 +222,23 @@ async function processAgentQuery(msg, cleanMobile, userMessage) {
             }
         }
     } catch (err) {
-        console.error('[Agent Beck Error] Failed to process agent query:', err.message);
+        console.error(`[Agent Beck Error] Failed to process message for ${cleanMobile}:`, err.message);
+        
+        // Remove from active sessions so the slot is freed up instantly
+        activeSessions.delete(cleanMobile);
+        promoteNextCustomer(); // Promote the next customer if waiting
+        
+        // Send a polite bilingual apology to the WhatsApp user
         try {
-            await msg.reply("We apologize for the inconvenience. Due to a temporary increase in system load, your request has been queued. You should receive a response shortly. If you do not receive a reply, please send your query again.");
+            // Detect if user message has Devanagari characters
+            const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
+            if (hasDevanagari) {
+                await msg.reply("क्षमा करें, वर्तमान में कुछ तकनीकी समस्याओं के कारण हम आपके संदेश का उत्तर नहीं दे पा रहे हैं। कृपया कुछ समय बाद पुनः प्रयास करें।");
+            } else {
+                await msg.reply("Sorry, hum abhi technical issue ki wajah se reply nahi kar pa rahe hain. Please thodi der baad dobara check karein.");
+            }
         } catch (replyErr) {
-            console.error('[Agent Beck Error] Failed to send fallback error reply:', replyErr.message);
+            console.error('[Agent Beck Error] Failed to send apology reply:', replyErr.message);
         }
     }
 }

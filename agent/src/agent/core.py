@@ -595,6 +595,7 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
         ]
         
         extracted_name = "Unknown"
+        llm_failed = False
         try:
             content, _, _, _, _, _, _, _ = call_llm_with_routing(
                 messages=extraction_prompt,
@@ -606,6 +607,29 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
                 extracted_name = str(content).strip().replace(".", "").replace('"', '').replace("'", "")
         except Exception as e:
             print(f"[Name Extraction Error] Failed: {e}")
+            llm_failed = True
+            
+        if llm_failed:
+            if is_hindi_input:
+                apology = "क्षमा करें, वर्तमान में कुछ तकनीकी समस्याओं के कारण हम आपके संदेश का उत्तर नहीं दे पा रहे हैं। कृपया कुछ समय बाद पुनः प्रयास करें।"
+            else:
+                apology = "Sorry, due to some technical issues we are unable to process your request right now. Please try again in a few moments."
+                
+            memory.add_message(session_id, role="user", content=user_message)
+            memory.add_message(session_id, role="model", content=apology)
+            save_conversation_to_file(session_id)
+            
+            return {
+                "session_id": session_id,
+                "response": apology,
+                "provider": "System",
+                "model": "System_PreCheck_Failed",
+                "response_time_ms": (time.time() - start_time_extract) * 1000,
+                "fallback_used": False,
+                "fallback_reason": "LLM failed during name extraction",
+                "called_tools": [],
+                "timeline": timeline
+            }
             
         if extracted_name and extracted_name.lower() not in ["unknown", "none", "null", "unrelated"]:
             # Name successfully extracted! Save to DB, greet them, and reset state.
