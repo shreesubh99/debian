@@ -283,7 +283,8 @@ function createWhatsAppClient() {
         authTimeoutMs: 120000,
         qrTimeoutMs: 120000,
         webVersionCache: {
-            type: 'local'
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
         },
         puppeteer: puppeteerConfig
     });
