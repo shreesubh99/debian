@@ -535,7 +535,14 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
     detected_interest = "None"
     try:
         from src.db_connection import execute_query
-        rows = execute_query("SELECT interest FROM customer_interests WHERE mobile = %s", (mobile_to_check,))
+        clean_digits = "".join(c for c in str(mobile_to_check) if c.isdigit())
+        last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile_to_check
+        with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile_to_check
+        
+        rows = execute_query(
+            "SELECT interest FROM customer_interests WHERE mobile = %s OR mobile = %s OR mobile = %s",
+            (mobile_to_check, last_10, with_country)
+        )
         if rows and rows[0].get("interest"):
             detected_interest = rows[0]["interest"]
     except Exception as e:
@@ -551,11 +558,26 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
                 new_interest = analyze_customer_interest(last_chats)
                 
                 from src.db_connection import execute_query
-                execute_query("""
-                    INSERT INTO customer_interests (mobile, interest)
-                    VALUES (%s, %s)
-                    ON DUPLICATE KEY UPDATE interest = %s
-                """, (mobile, new_interest, new_interest))
+                clean_digits = "".join(c for c in str(mobile) if c.isdigit())
+                last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile
+                with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile
+                
+                # Check if a record already exists with any of these keys
+                check_rows = execute_query(
+                    "SELECT mobile FROM customer_interests WHERE mobile = %s OR mobile = %s OR mobile = %s",
+                    (mobile, last_10, with_country)
+                )
+                if check_rows:
+                    existing_mobile = check_rows[0]["mobile"]
+                    execute_query(
+                        "UPDATE customer_interests SET interest = %s WHERE mobile = %s",
+                        (new_interest, existing_mobile)
+                    )
+                else:
+                    execute_query(
+                        "INSERT INTO customer_interests (mobile, interest) VALUES (%s, %s)",
+                        (mobile, new_interest)
+                    )
                 print(f"[Interest Logger Async] Saved interest '{new_interest}' for mobile {mobile}")
             except Exception as async_err:
                 print(f"[Interest Logger Async Error] {async_err}")
