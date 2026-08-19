@@ -36,16 +36,19 @@ def _ensure_gemini_api_key() -> str:
     key = _get_clean_env("GEMINI_API_KEY", "")
     placeholder_values = ["your_gemini_api_key", "your_gemini_api_key_here", ""]
     
-    if not key or key.strip().lower() in placeholder_values:
+    is_incomplete = "___" in key or not key or key.strip().lower() in placeholder_values
+    
+    if is_incomplete:
         import sys
         if sys.stdin.isatty():
             print("\n" + "="*60)
-            print("🔑 GEMINI_API_KEY is not configured in .env!")
-            print("Please paste your Google Gemini API key to continue setup.")
+            print("🔑 GEMINI_API_KEY is incomplete or not configured in .env!")
+            print(f"Current value in .env: {key}")
+            print("Please paste your COMPLETE Google Gemini API key to continue setup.")
             print("="*60 + "\n")
             try:
-                user_key = input("Enter Gemini API Key: ").strip().replace('"', '').replace("'", "")
-                if user_key and user_key.lower() not in placeholder_values:
+                user_key = input("Enter Complete Gemini API Key: ").strip().replace('"', '').replace("'", "")
+                if user_key and user_key.lower() not in placeholder_values and "___" not in user_key:
                     if os.path.exists(env_path):
                         lines = open(env_path, "r", encoding="utf-8").read().splitlines()
                         updated = False
