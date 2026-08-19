@@ -814,12 +814,38 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
             )
             
         # Call model with routing
-        content, tool_calls, raw, p_name, m_name, latency, fb_used, fb_reason = call_llm_with_routing(
-            messages=history,
-            tools=TOOLS_DECLARATIONS,
-            system_instruction=custom_system_instruction,
-            timeline=timeline
-        )
+        try:
+            content, tool_calls, raw, p_name, m_name, latency, fb_used, fb_reason = call_llm_with_routing(
+                messages=history,
+                tools=TOOLS_DECLARATIONS,
+                system_instruction=custom_system_instruction,
+                timeline=timeline
+            )
+        except Exception as routing_err:
+            print(f"[Core Error] All routing models failed: {routing_err}")
+            
+            # Formulate apology response in the correct language
+            if is_hindi_script:
+                apology = "क्षमा करें, वर्तमान में कुछ तकनीकी समस्याओं के कारण हम आपके संदेश का उत्तर नहीं दे पा रहे हैं। कृपया कुछ समय बाद पुनः प्रयास करें।"
+            else:
+                apology = "Sorry, due to some technical issues we are unable to process your request right now. Please try again in a few moments."
+            
+            # Save to memory
+            memory.add_message(session_id, role="assistant", content=apology)
+            save_conversation_to_file(session_id)
+            
+            return {
+                "session_id": session_id,
+                "response": apology,
+                "provider": "System",
+                "model": "System_All_Models_Failed",
+                "response_time_ms": (time.time() - start_time) * 1000,
+                "fallback_used": True,
+                "fallback_reason": f"All models failed. Last error: {str(routing_err)}",
+                "called_tools": called_tools,
+                "timeline": timeline,
+                "voice_mode": memory.get_context(session_id).get("voice_mode", False)
+            }
         
         # Accumulate metrics
         provider_name = p_name
