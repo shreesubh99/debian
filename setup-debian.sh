@@ -338,8 +338,8 @@ EOF
 
 # Reload daemon and enable service to run on boot
 sudo systemctl daemon-reload
-sudo systemctl enable ytsk-bot.service
-echo "Systemd service 'ytsk-bot.service' created and configured to run on boot!"
+# sudo systemctl enable ytsk-bot.service
+# echo "Systemd service 'ytsk-bot.service' created and configured to run on boot!"
 echo ""
 
 # 9. Configure Wi-Fi Network Monitor Service (Auto-shutdown on boot)
@@ -368,8 +368,8 @@ EOF
 
 # Reload daemon and enable the wifi monitor service to run on boot
 sudo systemctl daemon-reload
-sudo systemctl enable ytsk-wifi-monitor.service
-echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
+# sudo systemctl enable ytsk-wifi-monitor.service
+# echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
 echo ""
 
 # Restart the services automatically so they run instantly on setup completion
