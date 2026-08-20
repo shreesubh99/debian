@@ -10,10 +10,18 @@ console.log('==========================================================');
 if (process.platform !== 'win32') {
     console.log('[Runner] Performing pre-startup port cleanup (killing stale processes on 3333 and 8000)...');
     try {
+        // Use fuser (if available)
         execSync("fuser -k 3333/tcp 2>/dev/null || true");
         execSync("fuser -k 8000/tcp 2>/dev/null || true");
         execSync("sudo fuser -k 3333/tcp 2>/dev/null || true");
         execSync("sudo fuser -k 8000/tcp 2>/dev/null || true");
+        
+        // Fallback: Use lsof + kill (if fuser was not installed or failed to kill)
+        execSync("kill -9 $(lsof -t -i:3333) 2>/dev/null || true");
+        execSync("kill -9 $(lsof -t -i:8000) 2>/dev/null || true");
+        execSync("sudo kill -9 $(sudo lsof -t -i:3333) 2>/dev/null || true");
+        execSync("sudo kill -9 $(sudo lsof -t -i:8000) 2>/dev/null || true");
+        
         console.log('[Runner] Ports cleaned successfully.');
     } catch (cleanErr) {
         console.warn(`[Runner Warning] Failed to clean ports: ${cleanErr.message}`);
