@@ -95,64 +95,65 @@ else
     echo "Created default directory structure at: ${ROOT_DIR}"
 fi
 
-# Auto-create .env from .env.example if missing
-if [ ! -f "${ROOT_DIR}/.env" ] && [ -f "${ROOT_DIR}/.env.example" ]; then
-    echo "Creating .env configuration file from template..."
-    cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
-fi
-
-# Clean Windows carriage returns (\r) in .env and scripts immediately
-if [ -f "${ROOT_DIR}/.env" ]; then
-    echo "Cleaning Windows carriage returns (\r) from .env..."
-    sed -i 's/\r$//' "${ROOT_DIR}/.env"
-fi
-
-# Automatically configure Gemini as the primary provider (Lite version for higher quota)
-if [ -f "${ROOT_DIR}/.env" ]; then
-    echo "Automatically configuring Gemini 3.5 Flash Lite as the primary provider..."
-    sed -i 's|^PRIMARY_PROVIDER=.*|PRIMARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
-    sed -i 's|^PRIMARY_MODEL=.*|PRIMARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
-    sed -i 's|^SECONDARY_PROVIDER=.*|SECONDARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
-    sed -i 's|^SECONDARY_MODEL=.*|SECONDARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
-    sed -i 's|^GROQ_MODEL=.*|GROQ_MODEL=qwen/qwen3.6-27b|' "${ROOT_DIR}/.env"
-fi
-
-# Interactive API Key Prompting during setup
-if [ -f "${ROOT_DIR}/.env" ]; then
-    # Read current keys
-    CURRENT_GEMINI=$(grep "^GEMINI_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
-    CURRENT_GROQ=$(grep "^GROQ_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
-    
-    # Check if Gemini key is incomplete
-    if [[ "$CURRENT_GEMINI" == *"___"* ]] || [[ "$CURRENT_GEMINI" == *"YOUR_GEMINI"* ]] || [ -z "$CURRENT_GEMINI" ]; then
-        echo ""
-        echo "=========================================================="
-        echo "🔑 GEMINI_API_KEY is incomplete or not configured!"
-        echo "Please paste your COMPLETE Google Gemini API key:"
-        echo "=========================================================="
-        read -r USER_GEMINI
-        USER_GEMINI=$(echo "$USER_GEMINI" | tr -d '\r' | xargs)
-        if [ -n "$USER_GEMINI" ]; then
-            sed -i "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$USER_GEMINI|" "${ROOT_DIR}/.env"
-            echo "✅ Gemini API Key updated."
-        fi
-    fi
-    
-    # Check if Groq key is incomplete
-    if [[ "$CURRENT_GROQ" == *"___"* ]] || [[ "$CURRENT_GROQ" == *"YOUR_GROQ"* ]] || [ -z "$CURRENT_GROQ" ]; then
-        echo ""
-        echo "=========================================================="
-        echo "🔑 GROQ_API_KEY is incomplete or not configured!"
-        echo "Please paste your COMPLETE Groq API key:"
-        echo "=========================================================="
-        read -r USER_GROQ
-        USER_GROQ=$(echo "$USER_GROQ" | tr -d '\r' | xargs)
-        if [ -n "$USER_GROQ" ]; then
-            sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$USER_GROQ|" "${ROOT_DIR}/.env"
-            echo "✅ Groq API Key updated."
-        fi
-    fi
-fi
+# (Commented out by user request to prevent setup from creating/modifying the pre-existing .env file)
+# # Auto-create .env from .env.example if missing
+# if [ ! -f "${ROOT_DIR}/.env" ] && [ -f "${ROOT_DIR}/.env.example" ]; then
+#     echo "Creating .env configuration file from template..."
+#     cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
+# fi
+# 
+# # Clean Windows carriage returns (\r) in .env and scripts immediately
+# if [ -f "${ROOT_DIR}/.env" ]; then
+#     echo "Cleaning Windows carriage returns (\r) from .env..."
+#     sed -i 's/\r$//' "${ROOT_DIR}/.env"
+# fi
+# 
+# # Automatically configure Gemini as the primary provider (Lite version for higher quota)
+# if [ -f "${ROOT_DIR}/.env" ]; then
+#     echo "Automatically configuring Gemini 3.5 Flash Lite as the primary provider..."
+#     sed -i 's|^PRIMARY_PROVIDER=.*|PRIMARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
+#     sed -i 's|^PRIMARY_MODEL=.*|PRIMARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
+#     sed -i 's|^SECONDARY_PROVIDER=.*|SECONDARY_PROVIDER=gemini|' "${ROOT_DIR}/.env"
+#     sed -i 's|^SECONDARY_MODEL=.*|SECONDARY_MODEL=gemini-3.5-flash-lite|' "${ROOT_DIR}/.env"
+#     sed -i 's|^GROQ_MODEL=.*|GROQ_MODEL=qwen/qwen3.6-27b|' "${ROOT_DIR}/.env"
+# fi
+# 
+# # Interactive API Key Prompting during setup
+# if [ -f "${ROOT_DIR}/.env" ]; then
+#     # Read current keys
+#     CURRENT_GEMINI=$(grep "^GEMINI_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+#     CURRENT_GROQ=$(grep "^GROQ_API_KEY=" "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+#     
+#     # Check if Gemini key is incomplete
+#     if [[ "$CURRENT_GEMINI" == *"___"* ]] || [[ "$CURRENT_GEMINI" == *"YOUR_GEMINI"* ]] || [ -z "$CURRENT_GEMINI" ]; then
+#         echo ""
+#         echo "=========================================================="
+#         echo "🔑 GEMINI_API_KEY is incomplete or not configured!"
+#         echo "Please paste your COMPLETE Google Gemini API key:"
+#         echo "=========================================================="
+#         read -r USER_GEMINI
+#         USER_GEMINI=$(echo "$USER_GEMINI" | tr -d '\r' | xargs)
+#         if [ -n "$USER_GEMINI" ]; then
+#             sed -i "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$USER_GEMINI|" "${ROOT_DIR}/.env"
+#             echo "✅ Gemini API Key updated."
+#         fi
+#     fi
+#     
+#     # Check if Groq key is incomplete
+#     if [[ "$CURRENT_GROQ" == *"___"* ]] || [[ "$CURRENT_GROQ" == *"YOUR_GROQ"* ]] || [ -z "$CURRENT_GROQ" ]; then
+#         echo ""
+#         echo "=========================================================="
+#         echo "🔑 GROQ_API_KEY is incomplete or not configured!"
+#         echo "Please paste your COMPLETE Groq API key:"
+#         echo "=========================================================="
+#         read -r USER_GROQ
+#         USER_GROQ=$(echo "$USER_GROQ" | tr -d '\r' | xargs)
+#         if [ -n "$USER_GROQ" ]; then
+#             sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$USER_GROQ|" "${ROOT_DIR}/.env"
+#             echo "✅ Groq API Key updated."
+#         fi
+#     fi
+# fi
 
 # API keys are pre-configured in .env.example templates for fully automated startup
 
