@@ -1,10 +1,24 @@
-const { spawn, execSync } = require('child_process');
+const { spawn, spawnSync, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 console.log('==========================================================');
 console.log('   Starting WhatsApp Bot & Python AI Agent Concurrently   ');
 console.log('==========================================================');
+
+// Pre-cleanup ports 3333 and 8000 to resolve Port Error on Debian/Linux
+if (process.platform !== 'win32') {
+    console.log('[Runner] Performing pre-startup port cleanup (killing stale processes on 3333 and 8000)...');
+    try {
+        execSync("fuser -k 3333/tcp 2>/dev/null || true");
+        execSync("fuser -k 8000/tcp 2>/dev/null || true");
+        execSync("sudo fuser -k 3333/tcp 2>/dev/null || true");
+        execSync("sudo fuser -k 8000/tcp 2>/dev/null || true");
+        console.log('[Runner] Ports cleaned successfully.');
+    } catch (cleanErr) {
+        console.warn(`[Runner Warning] Failed to clean ports: ${cleanErr.message}`);
+    }
+}
 
 // 1. Auto-detect directories
 let rootDir = __dirname;

@@ -334,66 +334,6 @@ function createWhatsAppClient() {
         isWaReady = true;
         currentQrDataUrl = null;
         console.log('[WhatsApp] READY! Ready to send messages.');
-
-        // Wait 5 seconds for WhatsApp Web internal chat list sync to complete
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
-        // Catch up on unread messages received while the server was offline
-        console.log('[Offline Catchup] Checking for unread messages...');
-        try {
-            const chats = await waClient.getChats();
-            const unreadChats = chats.filter(chat => chat.unreadCount > 0 && !chat.isGroup);
-            
-            if (unreadChats.length > 0) {
-                console.log(`[Offline Catchup] Found ${unreadChats.length} unread chats. Processing...`);
-                for (const chat of unreadChats) {
-                    try {
-                        const messages = await chat.fetchMessages({ limit: chat.unreadCount });
-                        for (const msg of messages) {
-                            if (!msg.fromMe) {
-                                const userMessage = msg.body;
-                                if (!userMessage) continue;
-                                
-                                let cleanMobile = msg.from.replace('@c.us', '');
-                                if (msg.from.includes('@lid')) {
-                                    try {
-                                        const contact = await msg.getContact();
-                                        if (contact && contact.number) {
-                                            cleanMobile = contact.number;
-                                        }
-                                    } catch (err) {
-                                        console.error('[LID Resolution Error] Failed to fetch contact number during catchup:', err.message);
-                                    }
-                                }
-                                console.log(`[Offline Catchup] Found unread message from ${cleanMobile}: "${userMessage}"`);
-                                
-                                // Send apology reply
-                                await msg.reply("We apologize for the delay. Our server was temporarily offline. We are now processing your request...");
-                                
-                                // Process or queue the message
-                                if (activeSessions.has(cleanMobile)) {
-                                    activeSessions.set(cleanMobile, Date.now());
-                                    await processAgentQuery(msg, cleanMobile, userMessage);
-                                } else if (activeSessions.size < 4) {
-                                    activeSessions.set(cleanMobile, Date.now());
-                                    await processAgentQuery(msg, cleanMobile, userMessage);
-                                } else {
-                                    waitingQueue.push({ msg, cleanMobile, userMessage });
-                                }
-                            }
-                        }
-                        // Mark the chat as seen
-                        await chat.sendSeen();
-                    } catch (chatErr) {
-                        console.error(`[Offline Catchup Error] Failed to process chat ${chat.id._serialized}:`, chatErr.message);
-                    }
-                }
-            } else {
-                console.log('[Offline Catchup] No unread messages found.');
-            }
-        } catch (catchupErr) {
-            console.error('[Offline Catchup Error] Failed to retrieve chats:', catchupErr.message);
-        }
     });
 
     // Incoming Message Listener with Concurrency Queuing (Integrates Python AI Agent Beck)

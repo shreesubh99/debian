@@ -373,9 +373,10 @@ echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run 
 echo ""
 
 # Restart the services automatically so they run instantly on setup completion
-echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
-sudo systemctl restart ytsk-bot.service
-sudo systemctl restart ytsk-wifi-monitor.service
+# (Commented out by user request to allow manual npm start running)
+# echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
+# sudo systemctl restart ytsk-bot.service
+# sudo systemctl restart ytsk-wifi-monitor.service
 
 echo "=========================================================="
 echo "           SETUP COMPLETED SUCCESSFULLY!                 "
