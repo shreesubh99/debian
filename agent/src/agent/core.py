@@ -621,8 +621,12 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
         memory.update_context(session_id, "customer_mobile", customer.get("mobile"))
         
     is_hindi_input = is_devanagari(user_message)
-    if not has_name:
-        # Run name extraction to check if they already provided their name in this message
+    # Check if they want to correct/update their name (if they already have a name)
+    name_keywords = ["name", "naam", "नाम", "change", "update", "correct", "badal", "बदल", "nahi", "नही", "galat", "गलत"]
+    has_name_keywords = has_name and any(kw in user_message.lower() for kw in name_keywords)
+    
+    if not has_name or has_name_keywords:
+        # Run name extraction to check if they provided/corrected their name in this message
         timeline = []
         start_time_extract = time.time()
         timeline.append({
@@ -630,16 +634,26 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
             "event": f"Pre-extracting name from user response: '{user_message}'"
         })
         
+        # If they already have a name, we prompt the LLM specifically to check for name corrections
+        if has_name:
+            prompt_instruction = (
+                f"Analyze the user's message. The current saved name of the user is '{customer_name}'.\n"
+                f"Determine if the user wants to change, update, or correct their name (e.g. 'change my name to Deepak', 'mera naam deepak hai', 'pintu nahi deepak', 'update my name').\n"
+                f"If they want to change/update their name, extract ONLY the NEW name they specified, and output ONLY the name itself with correct capitalization, and absolutely no other text.\n"
+                f"If they do not want to change their name, or are just asking a query/booking a service/talking about something else, return ONLY 'Unrelated'."
+            )
+        else:
+            prompt_instruction = (
+                "Analyze the user's message. If the user is telling their name (e.g. 'Sajal', 'My name is Amit', 'अमित कुमार'), "
+                "extract ONLY the name itself, with correct capitalization, and absolutely no other text.\n"
+                "If the user is ignoring the name prompt and asking a query, booking a service, or talking about something else "
+                "(e.g. 'ticket price?', 'train timing', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'."
+            )
+            
         extraction_prompt = [
             {
                 "role": "user",
-                "content": (
-                    "Analyze the user's message. If the user is telling their name (e.g. 'Sajal', 'My name is Amit', 'अमित कुमार'), "
-                    "extract ONLY the name itself, with correct capitalization, and absolutely no other text.\n"
-                    "If the user is ignoring the name prompt and asking a query, booking a service, or talking about something else "
-                    "(e.g. 'ticket price?', 'train timing', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'.\n"
-                    "Message: '" + user_message + "'"
-                )
+                "content": f"{prompt_instruction}\nMessage: '{user_message}'"
             }
         ]
         
@@ -681,50 +695,91 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
             }
             
         if extracted_name and extracted_name.lower() not in ["unknown", "none", "null", "unrelated"]:
-            # Name successfully extracted! Save to DB, greet them, and reset state.
-            try:
-                from src.db_connection import execute_query
-                first_name = extracted_name.split()[0]
+            # Check if this is a name change/correction
+            if has_name and extracted_name.lower() != customer_name.lower():
+                try:
+                    from src.db_connection import execute_query
+                    clean_digits = "".join(c for c in str(mobile_to_check) if c.isdigit())
+                    last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile_to_check
+                    with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile_to_check
+                    
+                    query = "UPDATE customers SET name = %s WHERE mobile = %s OR mobile = %s OR mobile = %s"
+                    execute_query(query, (extracted_name, mobile_to_check, last_10, with_country))
+                    print(f"[Name Correction] Successfully updated customer name: '{customer_name}' -> '{extracted_name}' for mobile {mobile_to_check}")
+                except Exception as db_err:
+                    print(f"[Name Correction DB Error] Failed to update name: {db_err}")
                 
-                clean_digits = "".join(c for c in str(mobile_to_check) if c.isdigit())
-                last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile_to_check
-                with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile_to_check
+                # Formulate correction confirmation reply
+                if is_hindi_input:
+                    success_reply = f"मैंने आपका नाम अपडेट कर दिया है: {customer_name} ➔ {extracted_name}"
+                else:
+                    success_reply = f"Maine aapka name update kar diya hai: {customer_name} ➔ {extracted_name}"
+                    
+                memory.add_message(session_id, role="user", content=user_message)
+                memory.add_message(session_id, role="model", content=success_reply)
+                save_conversation_to_file(session_id)
                 
-                query = "UPDATE customers SET name = %s WHERE mobile = %s OR mobile = %s OR mobile = %s"
-                execute_query(query, (extracted_name, mobile_to_check, last_10, with_country))
-                print(f"[Name Check] Successfully saved customer name: '{extracted_name}' for mobile {mobile_to_check}")
-            except Exception as db_err:
-                print(f"[Name Check DB Error] Failed to save name: {db_err}")
-                
-            memory.update_context(session_id, "state", None)
-            
-            if is_hindi_input:
-                success_reply = f"धन्यवाद {first_name}! आपका नाम दर्ज कर लिया गया है। अब बताइए, मैं आपकी क्या सहायता कर सकता हूँ?"
+                return {
+                    "session_id": session_id,
+                    "response": success_reply,
+                    "provider": "System",
+                    "model": "System_Name_Correction",
+                    "response_time_ms": (time.time() - start_time_extract) * 1000,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "called_tools": [],
+                    "timeline": timeline
+                }
+            elif has_name and extracted_name.lower() == customer_name.lower():
+                # Name is already correct, just pass through to regular agent routing
+                print(f"[Name Check] User mentioned their name '{extracted_name}', which matches current DB record. Passing through.")
+                pass
             else:
-                success_reply = f"Thank you {first_name}! Your name has been registered. Now tell me, how can I help you?"
+                # Standard first-time name registration
+                try:
+                    from src.db_connection import execute_query
+                    first_name = extracted_name.split()[0]
+                    
+                    clean_digits = "".join(c for c in str(mobile_to_check) if c.isdigit())
+                    last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else mobile_to_check
+                    with_country = "91" + last_10 if len(clean_digits) >= 10 else mobile_to_check
+                    
+                    query = "UPDATE customers SET name = %s WHERE mobile = %s OR mobile = %s OR mobile = %s"
+                    execute_query(query, (extracted_name, mobile_to_check, last_10, with_country))
+                    print(f"[Name Check] Successfully saved customer name: '{extracted_name}' for mobile {mobile_to_check}")
+                except Exception as db_err:
+                    print(f"[Name Check DB Error] Failed to save name: {db_err}")
+                    
+                memory.update_context(session_id, "state", None)
                 
-            memory.add_message(session_id, role="user", content=user_message)
-            memory.add_message(session_id, role="model", content=success_reply)
-            save_conversation_to_file(session_id)
-            
-            return {
-                "session_id": session_id,
-                "response": success_reply,
-                "provider": "System",
-                "model": "System_PreCheck",
-                "response_time_ms": (time.time() - start_time_extract) * 1000,
-                "fallback_used": False,
-                "fallback_reason": None,
-                "called_tools": [],
-                "timeline": timeline
-            }
+                if is_hindi_input:
+                    success_reply = f"धन्यवाद {first_name}! आपका नाम दर्ज कर लिया गया है। अब बताइए, मैं आपकी क्या सहायता कर सकता हूँ?"
+                else:
+                    success_reply = f"Thank you {first_name}! Your name has been registered. Now tell me, how can I help you?"
+                    
+                memory.add_message(session_id, role="user", content=user_message)
+                memory.add_message(session_id, role="model", content=success_reply)
+                save_conversation_to_file(session_id)
+                
+                return {
+                    "session_id": session_id,
+                    "response": success_reply,
+                    "provider": "System",
+                    "model": "System_PreCheck",
+                    "response_time_ms": (time.time() - start_time_extract) * 1000,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "called_tools": [],
+                    "timeline": timeline
+                }
         elif extracted_name and extracted_name.lower() == "unrelated":
-            # If the user sent a query instead of their name, don't block them!
-            # Set state to waiting_for_name and increment reminder count, but pass through to let agent answer.
-            count = context.get("name_reminder_count", 0) + 1
-            memory.update_context(session_id, "state", "waiting_for_name")
-            memory.update_context(session_id, "name_reminder_count", count)
-            print(f"[Name Check] User sent unrelated query: '{user_message}'. Bypassing block. Reminder count: {count}")
+            if not has_name:
+                # If the user sent a query instead of their name, don't block them!
+                # Set state to waiting_for_name and increment reminder count, but pass through to let agent answer.
+                count = context.get("name_reminder_count", 0) + 1
+                memory.update_context(session_id, "state", "waiting_for_name")
+                memory.update_context(session_id, "name_reminder_count", count)
+                print(f"[Name Check] User sent unrelated query: '{user_message}'. Bypassing block. Reminder count: {count}")
             pass
         else:
             # It is a simple greeting (like Hi/Hello) or name could not be extracted.
