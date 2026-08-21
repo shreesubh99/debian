@@ -71,60 +71,46 @@ def get_booking_status(booking_id_or_pnr: str) -> Dict[str, Any]:
     """
     # Check ticket_transactions
     query_ticket = """
-        SELECT ticket_id, ticket_no, passenger_details, amount_due, settled_amount, 
-               travel_date, status, remarks, created_at, source, destination, pnr_no 
+        SELECT ticket_id, ticket_no AS pnr_no, route, class, ticket_amount, ticket_type, 
+               pnr_cancel, payment_mode, created_at, train_no, train_name, passenger_count, 
+               book_date, travel_date, mobile, customer_id 
         FROM ticket_transactions 
-        WHERE pnr_no = %s OR ticket_id = %s OR ticket_no = %s
+        WHERE ticket_no = %s OR ticket_id = %s
     """
-    rows_ticket = execute_query(query_ticket, (booking_id_or_pnr, booking_id_or_pnr, booking_id_or_pnr))
+    rows_ticket = execute_query(query_ticket, (booking_id_or_pnr, booking_id_or_pnr))
     
-    # Check debtors ledger
-    query_debt = """
-        SELECT debtor_id, pnr_no, amount_due, settled_amount, status, travel_date, travel_date AS created_at, 
-               source, destination, remarks 
+    # Check outstanding payment status in debtors
+    query_debtor = """
+        SELECT debtor_id, debtor_name, mobile, amount_due, settled_amount, status, due_date, remarks 
         FROM debtors 
-        WHERE pnr_no = %s OR debtor_id = %s
+        WHERE pnr_no = %s
     """
-    rows_debt = execute_query(query_debt, (booking_id_or_pnr, booking_id_or_pnr))
+    rows_debtor = execute_query(query_debtor, (booking_id_or_pnr,))
     
-    if rows_ticket:
-        row = rows_ticket[0]
-        # Calculate outstanding
-        due = float(row.get("amount_due") or 0.0)
-        settled = float(row.get("settled_amount") or 0.0)
-        outstanding = due - settled
+    if not rows_ticket and not rows_debtor:
+        return {}
         
-        return {
-            "type": "ticket",
-            "pnr_no": row.get("pnr_no") or row.get("ticket_no"),
-            "amount_due": due,
-            "settled_amount": settled,
-            "outstanding": outstanding,
-            "travel_date": row.get("travel_date"),
-            "status": row.get("status"),
-            "remarks": row.get("remarks"),
-            "created_at": row.get("created_at"),
-            "route": f"{row.get('source')} to {row.get('destination')}" if row.get("source") else "Unknown"
-        }
-    elif rows_debt:
-        row = rows_debt[0]
-        due = float(row.get("amount_due") or 0.0)
-        settled = float(row.get("settled_amount") or 0.0)
-        outstanding = due - settled
-        
-        return {
-            "type": "debtor_ledger",
-            "pnr_no": row.get("pnr_no"),
-            "amount_due": due,
-            "settled_amount": settled,
-            "outstanding": outstanding,
-            "travel_date": row.get("travel_date"),
-            "status": row.get("status"),
-            "remarks": row.get("remarks"),
-            "created_at": row.get("created_at"),
-            "route": f"{row.get('source')} to {row.get('destination')}" if row.get("source") else "Unknown"
-        }
-    return {}
+    ticket_info = rows_ticket[0] if rows_ticket else {}
+    debtor_info = rows_debtor[0] if rows_debtor else {}
+    
+    # Consolidate status
+    pnr_cancel = ticket_info.get("pnr_cancel", 0)
+    ticket_type = ticket_info.get("ticket_type", "SALE")
+    
+    status = "Confirmed"
+    if pnr_cancel == 1 or ticket_type == "CANCEL":
+        status = "Cancelled"
+    
+    return {
+        "pnr_no": ticket_info.get("pnr_no", booking_id_or_pnr),
+        "ticket_status": status,
+        "booking_details": ticket_info,
+        "payment_status": debtor_info.get("status", "No Outstanding Record"),
+        "amount_due": float(debtor_info.get("amount_due", 0.0)) if debtor_info else 0.0,
+        "settled_amount": float(debtor_info.get("settled_amount", 0.0)) if debtor_info else 0.0,
+        "outstanding": float(debtor_info.get("amount_due", 0.0) - debtor_info.get("settled_amount", 0.0)) if debtor_info else 0.0,
+        "remarks": debtor_info.get("remarks", "")
+    }
 
 def get_ticket_details(booking_id_or_pnr: str) -> Dict[str, Any]:
     """
