@@ -131,6 +131,7 @@ class Config:
     AZURE_SPEECH_KEY = _get_clean_env("AZURE_SPEECH_KEY", "")
     AZURE_SPEECH_REGION = _get_clean_env("AZURE_SPEECH_REGION", "eastus")
     RAILKIT_API_KEY = _get_clean_env("RAILKIT_API_KEY", "")
+    SECRET_TOKEN = _get_clean_env("SECRET_TOKEN", "YTSK_WA_Secret_2024")
 
     @classmethod
     def validate(cls):
