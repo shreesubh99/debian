@@ -584,12 +584,14 @@ async function processQueue() {
         }
 
         try {
-            // Duplicate Checkpoint: Skip if already sent to this customer today
-            const alreadySentAt = await hasBeenSentToday(mobile);
-            if (alreadySentAt) {
-                console.log(`[Queue Skip] Duplicate message for ${mobile} ignored. Already sent today at ${alreadySentAt}.`);
-                resolve({ ok: true, status: 'skipped', reason: 'already_sent_today', mobile });
-                continue;
+            // Duplicate Checkpoint: Skip if already sent to this customer today (Only for debtor receipts/reminders)
+            if (type !== 'campaign') {
+                const alreadySentAt = await hasBeenSentToday(mobile);
+                if (alreadySentAt) {
+                    console.log(`[Queue Skip] Duplicate message for ${mobile} ignored. Already sent today at ${alreadySentAt}.`);
+                    resolve({ ok: true, status: 'skipped', reason: 'already_sent_today', mobile });
+                    continue;
+                }
             }
 
             // Delay check: If mobile is different, enforce 8 second gap
@@ -661,10 +663,32 @@ async function processQueue() {
                 await waClient.sendMessage(chatId, media);
                 console.log('  [WhatsApp] Document sent successfully.');
                 result = { ok: true, mobile, status: 'sent' };
+            } else if (type === 'campaign') {
+                const { message, file_content_base64, filename, mime_type } = payload;
+                const chatId = formatMobile(mobile);
+                
+                if (file_content_base64) {
+                    const media = new MessageMedia(
+                        mime_type || 'image/jpeg',
+                        file_content_base64,
+                        filename || 'ad_image.jpg'
+                    );
+                    // Send media with caption message (unified photo + caption text)
+                    await waClient.sendMessage(chatId, media, message ? { caption: message } : undefined);
+                    console.log('  [WhatsApp] Campaign media with caption sent successfully.');
+                } else if (message) {
+                    await waClient.sendMessage(chatId, message);
+                    console.log('  [WhatsApp] Campaign text sent successfully.');
+                } else {
+                    throw new Error('Neither message nor image was provided for campaign');
+                }
+                result = { ok: true, mobile, status: 'sent' };
             }
 
-            // Mark as sent today in the log file
-            await markAsSentToday(mobile);
+            // Mark as sent today in the log file (Only for debtor receipts/reminders)
+            if (type !== 'campaign') {
+                await markAsSentToday(mobile);
+            }
 
             lastSentMobile = mobile;
             lastSentTimestamp = Date.now();
@@ -794,6 +818,83 @@ app.post('/send-document', waAuth, (req, res) => {
         status: 'queued',
         message: 'Document queued successfully'
     });
+});
+
+// ── POST /send-campaign ───────────────────────────────────────────────────────
+app.post('/send-campaign', waAuth, async (req, res) => {
+    if (!isWaReady) {
+        return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
+    }
+
+    const { mobile, message, file_content_base64, filename, mime_type } = req.body;
+    const chatId = formatMobile(mobile);
+
+    if (!chatId) {
+        return res.status(400).json({ ok: false, error: `Invalid mobile number: ${mobile}` });
+    }
+
+    // Verify if registered on WhatsApp
+    try {
+        const isRegistered = await waClient.isRegisteredUser(chatId);
+        if (!isRegistered) {
+            return res.json({ ok: false, error: 'NO_WHATSAPP', message: 'Number is not registered on WhatsApp.' });
+        }
+    } catch (e) {
+        console.warn(`[Registration Check Warning] Failed for ${mobile}:`, e.message);
+    }
+
+    console.log(`[Queue Push] Campaign message queued for: ${mobile}`);
+
+    // Add to queue in background
+    messageQueue.push({
+        type: 'campaign',
+        mobile,
+        payload: { message, file_content_base64, filename, mime_type },
+        resolve: (result) => console.log(`[Queue Success] Campaign sent to ${mobile}`),
+        reject: (err) => console.error(`[Queue Failure] Campaign failed for ${mobile}: ${err.message}`)
+    });
+    processQueue();
+
+    return res.json({
+        ok: true,
+        status: 'queued',
+        message: 'Campaign message queued successfully'
+    });
+});
+
+// ── POST /agent-chat (Proxy to Python AI Agent) ──────────────────────────────
+app.post('/agent-chat', waAuth, async (req, res) => {
+    const { session_id, message, customer_id } = req.body;
+    const pythonUrl = "http://127.0.0.1:8000/api/chat";
+    
+    try {
+        console.log(`[Proxy Agent Chat] Forwarding request to Python Server. Session: ${session_id}`);
+        
+        const response = await fetch(pythonUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id, message, customer_id })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Python server returned status ${response.status}: ${errorText}`);
+        }
+        
+        const resData = await response.json();
+        return res.json({
+            ok: true,
+            status: 'success',
+            data: resData.data
+        });
+    } catch (err) {
+        console.error(`[Proxy Agent Error] Forwarding to Python failed:`, err.message);
+        return res.status(502).json({
+            ok: false,
+            error: 'AI_AGENT_OFFLINE',
+            message: 'Failed to communicate with local Python AI Agent. Make sure server.py is running on port 8000. Detail: ' + err.message
+        });
+    }
 });
 
 // ── POST /logout ─────────────────────────────────────────────────────────────

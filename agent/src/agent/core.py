@@ -606,11 +606,28 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
     except Exception as e:
         print(f"[Name Check / Insertion Warning] Failed to query/insert customer: {e}")
         
+    def is_placeholder_name(name_val: str, mob_val: str) -> bool:
+        if not name_val:
+            return True
+        nl = name_val.strip().lower()
+        if nl in ["unknown", "none", "null", "customer", "user", "guest"]:
+            return True
+        if nl.startswith("customer"):
+            return True
+        # Check if the name is just the mobile number or pure digits
+        clean_name_digits = "".join(c for c in nl if c.isdigit())
+        clean_mob_digits = "".join(c for c in str(mob_val) if c.isdigit())
+        if clean_name_digits and (clean_name_digits in clean_mob_digits or clean_mob_digits in clean_name_digits):
+            return True
+        if name_val.strip().isdigit():
+            return True
+        return False
+
     has_name = False
     customer_name = ""
     if customer and customer.get("name"):
         customer_name = str(customer.get("name")).strip()
-        if customer_name and customer_name.lower() not in ["unknown", "none", "null", "customer", "user"]:
+        if customer_name and not is_placeholder_name(customer_name, mobile_to_check):
             has_name = True
             
     context = memory.get_context(session_id)
