@@ -108,6 +108,30 @@ if (CHROME_PATH) {
 }
 
 let waClient = null;
+
+// Helper to resolve actual phone number from WhatsApp JID (handles LID & c.us)
+async function resolvePhoneNumber(jid) {
+    if (!jid) return '';
+    if (jid.endsWith('@c.us')) {
+        return jid.replace('@c.us', '');
+    }
+    if (jid.includes('@lid')) {
+        try {
+            if (waClient && typeof waClient.getContactLidAndPhone === 'function') {
+                const data = await waClient.getContactLidAndPhone([jid]);
+                if (data && data.length > 0 && data[0].pn) {
+                    console.log(`[LID Resolver] Resolved JID ${jid} to phone number: ${data[0].pn}`);
+                    return data[0].pn;
+                }
+            }
+        } catch (e) {
+            console.error(`[LID Resolver Error] Failed to resolve JID ${jid}:`, e.message);
+        }
+    }
+    // Fallback: strip domain suffix
+    return jid.split('@')[0];
+}
+
 let isWaReady = false;
 let currentQrDataUrl = null;
 
@@ -346,17 +370,7 @@ function createWhatsAppClient() {
         const userMessage = msg.body;
         if (!userMessage) return;
 
-        let cleanMobile = msg.from.replace('@c.us', '');
-        if (msg.from.includes('@lid')) {
-            try {
-                const contact = await msg.getContact();
-                if (contact && contact.number) {
-                    cleanMobile = contact.number;
-                }
-            } catch (err) {
-                console.error('[LID Resolution Error] Failed to fetch contact number:', err.message);
-            }
-        }
+        const cleanMobile = await resolvePhoneNumber(msg.from);
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
 
         // Check if customer is already in active sessions
