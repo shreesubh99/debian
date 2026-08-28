@@ -630,6 +630,109 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
         if customer_name and not is_placeholder_name(customer_name, mobile_to_check):
             has_name = True
             
+    # Start Enquiry Logging and Admin Notification asynchronously in a background daemon thread
+    try:
+        import threading
+        def run_enquiry_logging_task(mobile: str, name: str, msg: str):
+            try:
+                # Run a fast classification prompt using LLM
+                prompt = [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Analyze the user message. Decide if this represents a new customer travel enquiry, booking request, "
+                            "or question about rates/schedules (e.g. asking to book a train/flight, check train timings, visa info, exchange rates).\n"
+                            "Do NOT count general greetings (like 'hi', 'hello', 'good morning'), name introductions (like 'my name is Amit'), "
+                            "or generic replies (like 'ok', 'yes', 'thank you') as queries/requests.\n\n"
+                            "Respond with exactly one word: 'Yes' (if it is a request/enquiry) or 'No' (if it is just a greeting/simple reply).\n\n"
+                            f"User Message: '{msg}'"
+                        )
+                    }
+                ]
+                content, _, _, _, _, _, _, _ = call_llm_with_routing(
+                    messages=prompt,
+                    tools=[],
+                    system_instruction="You are a precise enquiry classifier. Output ONLY 'Yes' or 'No'.",
+                    timeline=[]
+                )
+                if content and "yes" in str(content).lower():
+                    # 1. Log to local JSON file
+                    import os
+                    import json
+                    import datetime
+                    
+                    enquiry_file = os.path.join(os.getcwd(), "conversations", "customer_enquiries.json")
+                    os.makedirs(os.path.dirname(enquiry_file), exist_ok=True)
+                    
+                    enquiry_record = {
+                        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "mobile": mobile,
+                        "name": name or "Unknown",
+                        "request": msg
+                    }
+                    
+                    existing_records = []
+                    if os.path.exists(enquiry_file):
+                        try:
+                            with open(enquiry_file, "r", encoding="utf-8") as f:
+                                existing_data = json.load(f)
+                                if isinstance(existing_data, list):
+                                    existing_records = existing_data
+                        except Exception:
+                            pass
+                    
+                    existing_records.append(enquiry_record)
+                    with open(enquiry_file, "w", encoding="utf-8") as f:
+                        json.dump(existing_records, f, indent=4, ensure_ascii=False)
+                        
+                    print(f"[Enquiry Logger] Logged customer request: {enquiry_record}")
+                    
+                    # 2. Instantly notify Admin on WhatsApp via local Node.js endpoint using built-in urllib
+                    import urllib.request
+                    from src.config import Config
+                    
+                    token = getattr(Config, "SECRET_TOKEN", "YTSK_WA_Secret_2024")
+                    admin_mobile = "9415345750"
+                    
+                    notification_message = (
+                        f"🔔 *NEW CUSTOMER REQUEST*\n"
+                        f"------------------------------------\n"
+                        f"• *Name:* {name or 'Unknown'}\n"
+                        f"• *Mobile:* {mobile}\n"
+                        f"• *Request Details:* {msg}\n"
+                        f"------------------------------------\n"
+                        f"Please call or message the customer to assist."
+                    )
+                    
+                    payload = {
+                        "token": token,
+                        "mobile": admin_mobile,
+                        "message": notification_message
+                    }
+                    
+                    req_data = json.dumps(payload).encode("utf-8")
+                    req_url = "http://127.0.0.1:3333/send-text"
+                    req = urllib.request.Request(
+                        req_url,
+                        data=req_data,
+                        headers={
+                            "x-api-token": token,
+                            "Content-Type": "application/json"
+                        },
+                        method="POST"
+                    )
+                    
+                    with urllib.request.urlopen(req, timeout=5.0) as response:
+                        print(f"[Enquiry Notifier] Admin notified successfully. Code: {response.getcode()}")
+            except Exception as async_err:
+                print(f"[Enquiry Logger Async Error] {async_err}")
+
+        # Send name as "Unknown" if it's currently a placeholder name
+        resolved_name = customer_name if has_name else "Unknown"
+        threading.Thread(target=run_enquiry_logging_task, args=(mobile_to_check, resolved_name, user_message), daemon=True).start()
+    except Exception as ie:
+        print(f"[Enquiry Notifier Thread Warning] Failed to start async profiling: {ie}")
+
     context = memory.get_context(session_id)
     state = context.get("state")
     
