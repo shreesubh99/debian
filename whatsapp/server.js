@@ -4,6 +4,7 @@ import fs from 'fs';
 import dns from 'dns';
 import os from 'os';
 import { execSync } from 'child_process';
+import { getLivePnrStatus, formatPnrMessage } from './pnr_service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -373,6 +374,28 @@ function createWhatsAppClient() {
 
         const cleanMobile = await resolvePhoneNumber(msg.from);
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
+
+        // Check if this is a PNR Live Status Query
+        const pnrMatch = userMessage.match(/\b\d{10}\b/);
+        const hasPnrKeywords = /pnr|status|current|live|check|bata|btao|position|confirm|ticket/i.test(userMessage);
+        
+        if (pnrMatch && (userMessage.trim().length === 10 || hasPnrKeywords)) {
+            const pnr = pnrMatch[0];
+            console.log(`[PNR Interceptor] Detected PNR Live query for PNR: ${pnr} from ${cleanMobile}`);
+            try {
+                const chat = await msg.getChat();
+                await chat.sendStateTyping();
+                
+                const pnrResult = await getLivePnrStatus(pnr);
+                const replyText = formatPnrMessage(pnrResult);
+                
+                await msg.reply(replyText);
+                console.log(`[PNR Interceptor] Successfully sent live PNR status to ${cleanMobile}`);
+                return; // Direct reply and bypass normal AI agent processing
+            } catch (pnrErr) {
+                console.error('[PNR Interceptor Error] Failed to handle PNR check:', pnrErr.message);
+            }
+        }
 
         // Check if customer is already in active sessions
         if (activeSessions.has(cleanMobile)) {

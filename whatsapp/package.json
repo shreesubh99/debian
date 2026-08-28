@@ -19,6 +19,7 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
+    "railkit": "^5.0.1",
     "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js"
   },
   "engines": {
