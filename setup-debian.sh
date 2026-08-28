@@ -95,18 +95,24 @@ else
     echo "Created default directory structure at: ${ROOT_DIR}"
 fi
 
-# (Commented out by user request to prevent setup from creating/modifying the pre-existing .env file)
-# # Auto-create .env from .env.example if missing
-# if [ ! -f "${ROOT_DIR}/.env" ] && [ -f "${ROOT_DIR}/.env.example" ]; then
-#     echo "Creating .env configuration file from template..."
-#     cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
-# fi
-# 
-# # Clean Windows carriage returns (\r) in .env and scripts immediately
-# if [ -f "${ROOT_DIR}/.env" ]; then
-#     echo "Cleaning Windows carriage returns (\r) from .env..."
-#     sed -i 's/\r$//' "${ROOT_DIR}/.env"
-# fi
+# Ensure RAILKIT_API_KEY is configured in the actual .env file during setup
+if [ -f "${ROOT_DIR}/.env" ]; then
+    echo "Updating RAILKIT_API_KEY in the actual .env file..."
+    if grep -q "^RAILKIT_API_KEY=" "${ROOT_DIR}/.env"; then
+        sed -i 's|^RAILKIT_API_KEY=.*|RAILKIT_API_KEY=irctc_49ac9361264ab72fe4bf3d139a8ec0cf904dcb834e0fa|' "${ROOT_DIR}/.env"
+    else
+        echo "RAILKIT_API_KEY=irctc_49ac9361264ab72fe4bf3d139a8ec0cf904dcb834e0fa" >> "${ROOT_DIR}/.env"
+    fi
+else
+    echo "Creating .env configuration file from template..."
+    cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
+fi
+
+# Clean Windows carriage returns (\r) in .env and scripts immediately
+if [ -f "${ROOT_DIR}/.env" ]; then
+    echo "Cleaning Windows carriage returns (\r) from .env..."
+    sed -i 's/\r$//' "${ROOT_DIR}/.env"
+fi
 # 
 # # Automatically configure Gemini as the primary provider (Lite version for higher quota)
 # if [ -f "${ROOT_DIR}/.env" ]; then
