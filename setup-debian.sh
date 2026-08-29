@@ -332,9 +332,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=${RUN_USER}
+User=root
 WorkingDirectory=${ROOT_DIR}
-ExecStart=${NPM_PATH} start
+ExecStart=/bin/bash ${ROOT_DIR}/start-debian.sh
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
@@ -345,8 +345,8 @@ EOF
 
 # Reload daemon and enable service to run on boot
 sudo systemctl daemon-reload
-# sudo systemctl enable ytsk-bot.service
-# echo "Systemd service 'ytsk-bot.service' created and configured to run on boot!"
+sudo systemctl enable ytsk-bot.service
+echo "Systemd service 'ytsk-bot.service' created and configured to run on boot!"
 echo ""
 
 # 9. Configure Wi-Fi Network Monitor Service (Auto-shutdown on boot)
@@ -375,15 +375,14 @@ EOF
 
 # Reload daemon and enable the wifi monitor service to run on boot
 sudo systemctl daemon-reload
-# sudo systemctl enable ytsk-wifi-monitor.service
-# echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
+sudo systemctl enable ytsk-wifi-monitor.service
+echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
 echo ""
 
 # Restart the services automatically so they run instantly on setup completion
-# (Commented out by user request to allow manual npm start running)
-# echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
-# sudo systemctl restart ytsk-bot.service
-# sudo systemctl restart ytsk-wifi-monitor.service
+echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
+sudo systemctl restart ytsk-bot.service
+sudo systemctl restart ytsk-wifi-monitor.service
 
 echo "=========================================================="
 echo "           SETUP COMPLETED SUCCESSFULLY!                 "

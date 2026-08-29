@@ -28,9 +28,15 @@ if [ -d "${ROOT_DIR}/whatsapp/session" ]; then
     chmod -R 777 "${ROOT_DIR}/whatsapp/session" 2>/dev/null || true
 fi
 
+# 3b. Pull latest changes from GitHub automatically on startup
+echo "[System] Checking for updates and pulling latest code from GitHub..."
+git fetch --all 2>/dev/null || true
+git reset --hard origin/main 2>/dev/null || true
+
 # 4. Start the servers concurrently dropping root privileges
 echo "[System] Booting Bot and Agent servers as user '${RUN_USER}'..."
 cd "${ROOT_DIR}"
 
 # Execute npm start as the non-root user to avoid Puppeteer profile blocks
 sudo -u "${RUN_USER}" npm start
+
