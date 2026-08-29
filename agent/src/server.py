@@ -50,7 +50,7 @@ def schedule_admin_report():
                 }
                 
                 # Derive Node URL dynamically
-                node_url = "http://localhost:51224/send-document"
+                node_url = "http://127.0.0.1:3333/send-document"
                 if hasattr(Config, "WA_API_URL") and Config.WA_API_URL:
                     node_url = f"{Config.WA_API_URL.rstrip('/')}/send-document"
                     
