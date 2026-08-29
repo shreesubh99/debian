@@ -1,5 +1,6 @@
-import railkitPkg from 'railkit';
-const { configure, checkPNRStatus } = railkitPkg;
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { configure, checkPNRStatus } = require('railkit');
 
 // Load API Key from environment
 const apiKey = process.env.RAILKIT_API_KEY || '';
