@@ -16,6 +16,23 @@ else
     exit 1
 fi
 
+# 1b. Force clean all ports and stale processes as root before launching
+echo "[System] Performing strict port and process cleanup before boot..."
+fuser -k 8000/tcp 2>/dev/null || true
+fuser -k 3333/tcp 2>/dev/null || true
+if command -v lsof &>/dev/null; then
+    kill -9 $(lsof -t -i:8000) 2>/dev/null || true
+    kill -9 $(lsof -t -i:3333) 2>/dev/null || true
+fi
+killall -9 node python python3 uvicorn chrome chromium chromium-browser ngrok 2>/dev/null || true
+pkill -f -9 node 2>/dev/null || true
+pkill -f -9 python 2>/dev/null || true
+pkill -f -9 uvicorn 2>/dev/null || true
+pkill -f -9 chrome 2>/dev/null || true
+pkill -f -9 chromium 2>/dev/null || true
+echo "[System] Cleanup completed. Ports 8000 and 3333 are now fully clear."
+
+
 # 2. Identify the normal user (non-root) to run the servers safely
 RUN_USER="${SUDO_USER:-beck}"
 echo "[System] Using user account: ${RUN_USER}"
