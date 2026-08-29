@@ -50,6 +50,11 @@ echo "[System] Checking for updates and pulling latest code from GitHub..."
 git fetch --all 2>/dev/null || true
 git reset --hard origin/main 2>/dev/null || true
 
+# 3c. Run setup-debian.sh to synchronize environment (packages, swap, keys)
+echo "[System] Running setup-debian.sh to configure environment..."
+bash "${ROOT_DIR}/setup-debian.sh" --no-restart
+
+
 # 4. Start the servers concurrently dropping root privileges
 echo "[System] Booting Bot and Agent servers as user '${RUN_USER}'..."
 cd "${ROOT_DIR}"

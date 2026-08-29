@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# Parse command-line arguments
+NO_RESTART=false
+for arg in "$@"; do
+  if [ "$arg" == "--no-restart" ]; then
+    NO_RESTART=true
+  fi
+done
+
 # Exit immediately if a command exits with a non-zero status
 set -e
 
@@ -397,9 +405,13 @@ echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run 
 echo ""
 
 # Restart the services automatically so they run instantly on setup completion
-echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
-sudo systemctl restart ytsk-bot.service
-sudo systemctl restart ytsk-wifi-monitor.service
+if [ "$NO_RESTART" = false ]; then
+    echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
+    sudo systemctl restart ytsk-bot.service
+    sudo systemctl restart ytsk-wifi-monitor.service
+else
+    echo "Running inside boot context. Skipping systemctl service restart to prevent infinite loops."
+fi
 
 echo "=========================================================="
 echo "           SETUP COMPLETED SUCCESSFULLY!                 "
