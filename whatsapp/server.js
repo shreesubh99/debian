@@ -623,7 +623,8 @@ async function processQueue() {
 
         try {
             // Duplicate Checkpoint: Skip if already sent to this customer today (Only for debtor receipts/reminders)
-            if (type !== 'campaign') {
+            const isAdminMobile = mobile === '9415345750' || mobile === '919415345750';
+            if (type !== 'campaign' && !isAdminMobile) {
                 const alreadySentAt = await hasBeenSentToday(mobile);
                 if (alreadySentAt) {
                     console.log(`[Queue Skip] Duplicate message for ${mobile} ignored. Already sent today at ${alreadySentAt}.`);
@@ -724,7 +725,7 @@ async function processQueue() {
             }
 
             // Mark as sent today in the log file (Only for debtor receipts/reminders)
-            if (type !== 'campaign') {
+            if (type !== 'campaign' && !isAdminMobile) {
                 await markAsSentToday(mobile);
             }
 
