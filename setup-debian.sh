@@ -13,6 +13,23 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Pre-installation Swap Check to prevent OOM Killer (Exit Code 137)
+echo "Checking Swap Space configuration..."
+SWAP_SIZE=$(free -m | awk '/Swap/ {print $2}')
+if [ -z "$SWAP_SIZE" ] || [ "$SWAP_SIZE" -eq 0 ]; then
+    echo "No swap space detected! Creating a 2GB swap file to protect Node/Python/Chrome from OOM crashes (Exit Code 137)..."
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    fi
+    echo "✅ 2GB Swap space successfully created and enabled."
+else
+    echo "Swap space is already configured: ${SWAP_SIZE}MB. Skipping swap creation."
+fi
+
 # Pre-installation System-wide Port & Process Cleanup (Resolves Locked Ports/Chrome)
 echo "Performing pre-installation system cleanup as root..."
 
