@@ -133,6 +133,72 @@ async function resolvePhoneNumber(jid) {
     return jid.split('@')[0];
 }
 
+// Helper to resolve validated Chat ID using getNumberId (handles LID vs c.us)
+async function resolveChatId(mobile) {
+    if (!mobile) return '';
+    let num = String(mobile).replace(/\D/g, '');
+    if (num.startsWith('0')) num = num.substring(1);
+    if (!num.startsWith('91')) num = '91' + num;
+    
+    try {
+        if (waClient && typeof waClient.getNumberId === 'function') {
+            const numberDetails = await waClient.getNumberId(num);
+            if (numberDetails && numberDetails._serialized) {
+                return numberDetails._serialized;
+            }
+        }
+    } catch (e) {
+        console.warn(`[ChatID Resolver Warning] getNumberId failed for ${num}: ${e.message}`);
+    }
+    
+    return num + '@c.us';
+}
+
+// Helper to safely send message avoiding "No LID for user" errors
+async function safeSendMessage(chatId, content, options = {}) {
+    try {
+        return await waClient.sendMessage(chatId, content, options);
+    } catch (err) {
+        if (err.message && err.message.includes('No LID for user')) {
+            console.warn(`[SafeSendMessage Warning] 'No LID for user' on ${chatId}. Re-resolving via getNumberId...`);
+            const rawNumber = String(chatId).split('@')[0].replace(/\D/g, '');
+            try {
+                if (waClient && typeof waClient.getNumberId === 'function') {
+                    const numberDetails = await waClient.getNumberId(rawNumber);
+                    if (numberDetails && numberDetails._serialized) {
+                        return await waClient.sendMessage(numberDetails._serialized, content, options);
+                    }
+                }
+            } catch (retryErr) {
+                console.error(`[SafeSendMessage Error] Retry getNumberId failed: ${retryErr.message}`);
+            }
+        }
+        throw err;
+    }
+}
+
+// Helper to safely reply/send message avoiding "No LID for user" errors
+async function safeReply(msg, content, options = {}) {
+    try {
+        return await msg.reply(content, undefined, options);
+    } catch (err) {
+        console.warn(`[SafeReply Warning] msg.reply failed (${err.message}). Attempting fallback methods...`);
+        try {
+            const chat = await msg.getChat();
+            return await chat.sendMessage(content, options);
+        } catch (chatErr) {
+            console.warn(`[SafeReply Warning] chat.sendMessage failed (${chatErr.message}). Attempting direct sendMessage...`);
+            try {
+                return await safeSendMessage(msg.from, content, options);
+            } catch (waErr) {
+                const cleanPhone = await resolvePhoneNumber(msg.from);
+                const resolvedChatId = await resolveChatId(cleanPhone);
+                return await safeSendMessage(resolvedChatId, content, options);
+            }
+        }
+    }
+}
+
 let isWaReady = false;
 let currentQrDataUrl = null;
 
@@ -153,7 +219,7 @@ async function promoteNextCustomer() {
     activeSessions.set(cleanMobile, Date.now());
     
     try {
-        await msg.reply("Thank you for waiting. We are now processing your request...");
+        await safeReply(msg, "Thank you for waiting. We are now processing your request...");
         // Process the message through the AI Agent
         await processAgentQuery(msg, cleanMobile, userMessage);
     } catch (err) {
@@ -232,7 +298,7 @@ async function processAgentQuery(msg, cleanMobile, userMessage) {
             console.log(`\n==========================================================`);
             console.log(`Sent From ${modelUsed}`);
             console.log(`==========================================================\n`);
-            await msg.reply(agentReply);
+            await safeReply(msg, agentReply);
 
             // If the agent returned a synthesized voice audio note, send it as a WhatsApp voice message
             if (data.data.audio_url) {
@@ -240,7 +306,7 @@ async function processAgentQuery(msg, cleanMobile, userMessage) {
                 console.log(`[Agent Beck] Voice mode active. Delivering audio note from: ${audioUrl}`);
                 try {
                     const media = await MessageMedia.fromUrl(audioUrl);
-                    await waClient.sendMessage(msg.from, media, { sendAudioAsVoice: true });
+                    await safeSendMessage(msg.from, media, { sendAudioAsVoice: true });
                 } catch (audioErr) {
                     console.error('[Agent Beck Error] Failed to send voice audio note:', audioErr.message);
                 }
@@ -258,9 +324,9 @@ async function processAgentQuery(msg, cleanMobile, userMessage) {
             // Detect if user message has Devanagari characters
             const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
             if (hasDevanagari) {
-                await msg.reply("क्षमा करें, वर्तमान में कुछ तकनीकी समस्याओं के कारण हम आपके संदेश का उत्तर नहीं दे पा रहे हैं। कृपया कुछ समय बाद पुनः प्रयास करें।");
+                await safeReply(msg, "क्षमा करें, वर्तमान में कुछ तकनीकी समस्याओं के कारण हम आपके संदेश का उत्तर नहीं दे पा रहे हैं। कृपया कुछ समय बाद पुनः प्रयास करें।");
             } else {
-                await msg.reply("Sorry, hum abhi technical issue ki wajah se reply nahi kar pa rahe hain. Please thodi der baad dobara check karein.");
+                await safeReply(msg, "Sorry, hum abhi technical issue ki wajah se reply nahi kar pa rahe hain. Please thodi der baad dobara check karein.");
             }
         } catch (replyErr) {
             console.error('[Agent Beck Error] Failed to send apology reply:', replyErr.message);
@@ -389,7 +455,7 @@ function createWhatsAppClient() {
                 const pnrResult = await getLivePnrStatus(pnr);
                 const replyText = formatPnrMessage(pnrResult);
                 
-                await msg.reply(replyText);
+                await safeReply(msg, replyText);
                 console.log(`[PNR Interceptor] Successfully sent live PNR status to ${cleanMobile}`);
                 return; // Direct reply and bypass normal AI agent processing
             } catch (pnrErr) {
@@ -425,7 +491,7 @@ function createWhatsAppClient() {
             if (!isAlreadyWaiting) {
                 console.log(`[Queue Manager] Max active sessions reached. Queueing customer ${cleanMobile} (FIFO).`);
                 waitingQueue.push({ msg, cleanMobile, userMessage });
-                await msg.reply("We are currently assisting other customers. You have been placed in our queue and will be replied to shortly.");
+                await safeReply(msg, "We are currently assisting other customers. You have been placed in our queue and will be replied to shortly.");
             } else {
                 console.log(`[Queue Manager] Customer ${cleanMobile} is already in the waiting queue. Ignoring duplicate queue entry.`);
             }
@@ -651,7 +717,7 @@ async function processQueue() {
 
             if (type === 'receipt') {
                 const { debtor_id, debtor_name, message, skip_pdf } = payload;
-                const chatId = formatMobile(mobile);
+                const chatId = await resolveChatId(mobile);
 
                 // 1. Try to generate PDF first
                 const shouldSkipPdf = skip_pdf === true || skip_pdf === 'true' ||
@@ -669,7 +735,7 @@ async function processQueue() {
 
                 // 2. Send Text Message
                 if (message) {
-                    await waClient.sendMessage(chatId, message);
+                    await safeSendMessage(chatId, message);
                     console.log('  [WhatsApp] Text message sent successfully.');
                 }
 
@@ -681,30 +747,30 @@ async function processQueue() {
                         pdfBase64,
                         `Receipt_${debtor_name || debtor_id}.pdf`
                     );
-                    await waClient.sendMessage(chatId, media);
+                    await safeSendMessage(chatId, media);
                     console.log('  [WhatsApp] Receipt PDF sent successfully.');
                 }
                 result = { ok: true, mobile, debtor_id, status: 'sent' };
             } else if (type === 'text') {
                 const { message } = payload;
-                const chatId = formatMobile(mobile);
-                await waClient.sendMessage(chatId, message);
+                const chatId = await resolveChatId(mobile);
+                await safeSendMessage(chatId, message);
                 console.log('  [WhatsApp] Text message sent successfully.');
                 result = { ok: true, mobile, status: 'sent' };
             } else if (type === 'document') {
                 const { file_content_base64, filename, mime_type } = payload;
-                const chatId = formatMobile(mobile);
+                const chatId = await resolveChatId(mobile);
                 const media = new MessageMedia(
                     mime_type || 'text/plain',
                     file_content_base64,
                     filename || 'report.txt'
                 );
-                await waClient.sendMessage(chatId, media);
+                await safeSendMessage(chatId, media);
                 console.log('  [WhatsApp] Document sent successfully.');
                 result = { ok: true, mobile, status: 'sent' };
             } else if (type === 'campaign') {
                 const { message, file_content_base64, filename, mime_type } = payload;
-                const chatId = formatMobile(mobile);
+                const chatId = await resolveChatId(mobile);
                 
                 if (file_content_base64) {
                     const media = new MessageMedia(
@@ -713,10 +779,10 @@ async function processQueue() {
                         filename || 'ad_image.jpg'
                     );
                     // Send media with caption message (unified photo + caption text)
-                    await waClient.sendMessage(chatId, media, message ? { caption: message } : undefined);
+                    await safeSendMessage(chatId, media, message ? { caption: message } : undefined);
                     console.log('  [WhatsApp] Campaign media with caption sent successfully.');
                 } else if (message) {
-                    await waClient.sendMessage(chatId, message);
+                    await safeSendMessage(chatId, message);
                     console.log('  [WhatsApp] Campaign text sent successfully.');
                 } else {
                     throw new Error('Neither message nor image was provided for campaign');
