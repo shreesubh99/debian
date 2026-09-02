@@ -620,8 +620,8 @@ app.get('/status', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 const LOG_FILE_PATH = path.join(__dirname, 'sent_log.json');
 
-// Helper to check if a mobile number has already received a message today
-async function hasBeenSentToday(mobile) {
+// Helper to check if a mobile number or distinct debtor bill has already received a message today
+async function hasBeenSentToday(logKey) {
     const fs = await import('fs');
     const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
     
@@ -629,8 +629,8 @@ async function hasBeenSentToday(mobile) {
         if (fs.existsSync(LOG_FILE_PATH)) {
             const raw = fs.readFileSync(LOG_FILE_PATH, 'utf8');
             const logData = JSON.parse(raw);
-            if (logData && logData.date === todayStr && logData.sent && logData.sent[mobile]) {
-                return logData.sent[mobile];
+            if (logData && logData.date === todayStr && logData.sent && logData.sent[logKey]) {
+                return logData.sent[logKey];
             }
         }
     } catch (e) {
@@ -640,7 +640,7 @@ async function hasBeenSentToday(mobile) {
 }
 
 // Helper to save a sent message timestamp for today
-async function markAsSentToday(mobile) {
+async function markAsSentToday(logKey) {
     const fs = await import('fs');
     const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
     let logData = { date: todayStr, sent: {} };
@@ -657,10 +657,10 @@ async function markAsSentToday(mobile) {
         // Safe to ignore, we will write a fresh file
     }
     
-    logData.sent[mobile] = new Date().toISOString();
+    logData.sent[logKey] = new Date().toISOString();
     try {
         fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(logData, null, 4));
-        console.log(`[Sent Log] Marked ${mobile} as sent for today (${todayStr})`);
+        console.log(`[Sent Log] Marked ${logKey} as sent for today (${todayStr})`);
     } catch (e) {
         console.error('[Sent Log Error] Failed to write sent_log.json:', e.message);
     }
@@ -688,13 +688,16 @@ async function processQueue() {
         }
 
         try {
-            // Duplicate Checkpoint: Skip if already sent to this customer today (Only for debtor receipts/reminders)
+            // Duplicate Checkpoint: Skip if already sent to this customer today (tracks per debtor_id or mobile)
             const isAdminMobile = mobile === '9415345750' || mobile === '919415345750';
+            const debtorId = payload?.debtor_id;
+            const logKey = (type === 'receipt' || debtorId) ? `${mobile}_debtor_${debtorId}` : mobile;
+
             if (type !== 'campaign' && !isAdminMobile) {
-                const alreadySentAt = await hasBeenSentToday(mobile);
+                const alreadySentAt = await hasBeenSentToday(logKey);
                 if (alreadySentAt) {
-                    console.log(`[Queue Skip] Duplicate message for ${mobile} ignored. Already sent today at ${alreadySentAt}.`);
-                    resolve({ ok: true, status: 'skipped', reason: 'already_sent_today', mobile });
+                    console.log(`[Queue Skip] Duplicate message for ${logKey} ignored. Already sent today at ${alreadySentAt}.`);
+                    resolve({ ok: true, status: 'skipped', reason: 'already_sent_today', mobile, logKey });
                     continue;
                 }
             }
@@ -792,7 +795,7 @@ async function processQueue() {
 
             // Mark as sent today in the log file (Only for debtor receipts/reminders)
             if (type !== 'campaign' && !isAdminMobile) {
-                await markAsSentToday(mobile);
+                await markAsSentToday(logKey);
             }
 
             lastSentMobile = mobile;
@@ -866,20 +869,20 @@ app.post('/send-text', waAuth, (req, res) => {
         return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
     }
 
-    const { mobile, message } = req.body;
+    const { mobile, message, debtor_id } = req.body;
     const chatId = formatMobile(mobile);
 
     if (!chatId) {
         return res.status(400).json({ ok: false, error: `Invalid mobile number: ${mobile}` });
     }
 
-    console.log(`[Queue Push] Text message queued for: ${mobile}`);
+    console.log(`[Queue Push] Text message queued for: ${mobile}${debtor_id ? ` (Debtor ID: ${debtor_id})` : ''}`);
 
     // Add to queue in background
     messageQueue.push({
         type: 'text',
         mobile,
-        payload: { message },
+        payload: { message, debtor_id },
         resolve: (result) => console.log(`[Queue Success] Text message sent to ${mobile}`),
         reject: (err) => console.error(`[Queue Failure] Failed for ${mobile}: ${err.message}`)
     });
