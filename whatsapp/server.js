@@ -428,6 +428,102 @@ function createWhatsAppClient() {
         console.log('[WhatsApp] READY! Ready to send messages.');
     });
 
+    // Rate-limiter / Loop breaker for rapidly spamming automated bots
+    const senderMessageTimestamps = new Map(); // key: sender JID, value: Array of timestamps
+
+    // Helper to detect and filter out automated messages from Banks, Govt, Telecom, OTPs, and Enterprise Bots
+    async function isAutomatedOrEnterpriseMessage(msg, userMessage) {
+        if (!msg || !userMessage) return true;
+
+        const from = msg.from || '';
+
+        // 1. WhatsApp JID / Metadata Filters
+        if (from.endsWith('@newsletter') || from.endsWith('@broadcast') || from.endsWith('@temp_') || from === '0@c.us') {
+            console.log(`[Bot Filter] Ignored message from channel/broadcast/system JID: ${from}`);
+            return true;
+        }
+
+        // 2. Non-standard message types (Protocol notifications, call logs, etc.)
+        const ignoredTypes = ['notification_template', 'e2e_notification', 'call_log', 'protocol', 'gp2'];
+        if (ignoredTypes.includes(msg.type)) {
+            console.log(`[Bot Filter] Ignored non-chat message type: ${msg.type} from ${from}`);
+            return true;
+        }
+
+        // 3. Contact Metadata Verification (WhatsApp Enterprise / Official Business Accounts)
+        try {
+            const contact = await msg.getContact();
+            if (contact) {
+                // Enterprise / Verified Business green tick accounts (Bank, Govt, Telecom, Brands)
+                if (contact.isEnterprise === true || contact.isVerified === true) {
+                    console.log(`[Bot Filter] Ignored message from Verified/Enterprise Business Account: ${contact.pushname || contact.name || from}`);
+                    return true;
+                }
+            }
+        } catch (contactErr) {
+            // Safe to continue if contact fetch fails
+        }
+
+        const text = userMessage.trim();
+
+        // 4. Heuristic Content Filters (Regex Pattern Matchers)
+
+        // A. OTP / Verification / Security Codes
+        const otpPattern = /\b(otp|one[\s-]?time[\s-]?password|verification[\s-]?code|security[\s-]?code|login[\s-]?code|auth[\s-]?code)\b/i;
+        const otpContextPattern = /\b(is|valid[\s-]?for|expires[\s-]?in|do[\s-]?not[\s-]?share|confidential|secret|code[\s:]+\d{4,8})\b/i;
+        if (otpPattern.test(text) && otpContextPattern.test(text)) {
+            console.log(`[Bot Filter] Ignored automated OTP/Verification message from ${from}`);
+            return true;
+        }
+
+        // B. Banking / UPI / Financial Transaction Alerts
+        const bankAlertPattern = /\b(debited[\s-]?by|credited[\s-]?with|debited[\s-]?for|credited[\s-]?to|a\/c[\s-]?no|acct?[\s-]?ending|available[\s-]?balance|avl[\s-]?bal|txn[\s-]?id|transaction[\s-]?id|utr[\s-]?no|sent[\s-]?via[\s-]?upi|received[\s-]?via[\s-]?upi|bank[\s-]?alert|card[\s-]?ending[\s-]?in)\b/i;
+        const bankAmountPattern = /(inr|rs\.?|₹|\bdebited\b|\bcredited\b)/i;
+        if (bankAlertPattern.test(text) && bankAmountPattern.test(text)) {
+            console.log(`[Bot Filter] Ignored automated Banking/Transaction alert from ${from}`);
+            return true;
+        }
+
+        // C. Government / Public Utility / Civic Notifications
+        const govtPattern = /\b(mygov|govt[\s-]?of[\s-]?india|government[\s-]?of|aadhaar|uidai|pan[\s-]?card|epfo|digilocker|traffic[\s-]?challan|electricity[\s-]?bill|gas[\s-]?connection|jal[\s-]?board|water[\s-]?bill)\b/i;
+        const govtContextPattern = /\b(notification|portal|dear[\s-]?citizen|services|payment[\s-]?due|registered[\s-]?mobile|challan[\s-]?no)\b/i;
+        if (govtPattern.test(text) && (govtContextPattern.test(text) || text.length > 80)) {
+            console.log(`[Bot Filter] Ignored automated Government/Utility alert from ${from}`);
+            return true;
+        }
+
+        // D. Telecom, Recharge & Plan Expiry Alerts
+        const telecomPattern = /\b(recharge[\s-]?successful|plan[\s-]?expiry|validity[\s-]?expires|data[\s-]?balance|daily[\s-]?quota|pack[\s-]?expires|jio[\s-]?fiber|airtel[\s-]?thanks|vi[\s-]?app|bsnl[\s-]?care)\b/i;
+        if (telecomPattern.test(text)) {
+            console.log(`[Bot Filter] Ignored automated Telecom/Recharge alert from ${from}`);
+            return true;
+        }
+
+        // E. Automated Bot / Do Not Reply Disclaimers
+        const automatedDisclaimerPattern = /\b(do[\s-]?not[\s-]?reply|this[\s-]?is[\s-]?an[\s-]?auto[\s-]?generated|system[\s-]?generated|automated[\s-]?message|reply[\s-]?stop|to[\s-]?opt[\s-]?out|unsubscribe|click[\s-]?here[\s-]?to[\s-]?view)\b/i;
+        if (automatedDisclaimerPattern.test(text)) {
+            console.log(`[Bot Filter] Ignored message with automated/Do-Not-Reply disclaimer from ${from}`);
+            return true;
+        }
+
+        // 5. Bot-to-Bot Ping-Pong Loop Breaker (Rate limiter)
+        const now = Date.now();
+        const windowMs = 15000; // 15 seconds window
+        const maxMessagesInWindow = 3;
+
+        let timestamps = senderMessageTimestamps.get(from) || [];
+        timestamps = timestamps.filter(t => now - t < windowMs);
+        timestamps.push(now);
+        senderMessageTimestamps.set(from, timestamps);
+
+        if (timestamps.length > maxMessagesInWindow) {
+            console.warn(`[Bot Filter] Rapid message loop detected from ${from} (${timestamps.length} msgs in 15s). Silencing auto-reply.`);
+            return true;
+        }
+
+        return false; // Allowed: genuine human customer message
+    }
+
     // Incoming Message Listener with Concurrency Queuing (Integrates Python AI Agent Beck)
     waClient.on('message', async (msg) => {
         // Skip group messages and status broadcasts
@@ -437,6 +533,12 @@ function createWhatsAppClient() {
 
         const userMessage = msg.body;
         if (!userMessage) return;
+
+        // Filter out automated messages from Banks, Govt, Telecom, and Enterprise Bots
+        const isAutomated = await isAutomatedOrEnterpriseMessage(msg, userMessage);
+        if (isAutomated) {
+            return; // Silently ignore automated messages
+        }
 
         const cleanMobile = await resolvePhoneNumber(msg.from);
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
