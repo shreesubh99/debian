@@ -543,6 +543,15 @@ function createWhatsAppClient() {
         const cleanMobile = await resolvePhoneNumber(msg.from);
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
 
+        // Anti-Ban Opt-Out / Unsubscribe Handler (Intercepts STOP/Unsubscribe to prevent spam reports)
+        const optOutKeywords = /^(stop|unsubscribe|band karo|mat bhejo|ruko|dont send|not interested|cancel)$/i;
+        if (optOutKeywords.test(userMessage.trim())) {
+            console.log(`[Anti-Ban Opt-Out] Customer ${cleanMobile} requested to unsubscribe.`);
+            await markAsUnsubscribed(cleanMobile);
+            await safeReply(msg, "Aapko hamari promotional broadcast list se unsubscribe kar diya gaya hai. Ab aapko koi promotional updates nahi aayenge. Dhanyawad!");
+            return;
+        }
+
         // Check if this is a PNR Live Status Query
         const pnrMatch = userMessage.match(/\b\d{10}\b/);
         const hasPnrKeywords = /pnr|status|current|live|check|bata|btao|position|confirm|ticket/i.test(userMessage);
@@ -703,6 +712,53 @@ async function generateReceiptPdf(debtorId) {
     }
 }
 
+// Puppeteer helper to print Ticket PDF from URL
+async function generateTicketPdf(ticketId) {
+    const url = WA_CONFIG.SITE_BASE_URL + '/print-pnr-ticket.php'
+              + '?ticket_id=' + ticketId
+              + '&pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN)
+              + '&print=1'
+              + '&cb=' + Date.now();
+
+    console.log(`[WhatsApp Ticket PDF] Generating from URL: ${url}`);
+
+    let tempBrowser = null;
+    let page = null;
+    try {
+        const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
+        delete pdfLaunchOptions.launcher;
+
+        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
+        page = await tempBrowser.newPage();
+
+        await page.evaluateOnNewDocument(() => {
+            window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
+        });
+
+        await page.goto(url, {
+            waitUntil: 'load',
+            timeout: 25000
+        });
+
+        await page.emulateMediaType('print');
+
+        const pdfBuffer = await page.pdf({
+            format: 'A4',
+            printBackground: true,
+            margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
+        });
+
+        await tempBrowser.close();
+        return Buffer.from(pdfBuffer).toString('base64');
+    } catch (err) {
+        if (tempBrowser) {
+            try { await tempBrowser.close(); } catch (e) {}
+        }
+        console.error('[WhatsApp Ticket PDF] Failed to generate PDF:', err.message);
+        throw err;
+    }
+}
+
 // ── WhatsApp Auth Middleware ──────────────────────────────────────────────────
 function waAuth(req, res, next) {
     const token = req.headers['x-api-token'] || req.body?.token;
@@ -768,10 +824,81 @@ async function markAsSentToday(logKey) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// Anti-Ban Campaign Shield: Opt-Out & Spintax Engine
+// ═══════════════════════════════════════════════════════════
+const UNSUB_FILE_PATH = path.join(__dirname, 'unsubscribed_contacts.json');
+
+// Check if a customer has opted out / unsubscribed
+async function isUnsubscribed(mobile) {
+    const fs = await import('fs');
+    const cleanNum = String(mobile).replace(/\D/g, '');
+    try {
+        if (fs.existsSync(UNSUB_FILE_PATH)) {
+            const raw = fs.readFileSync(UNSUB_FILE_PATH, 'utf8');
+            const data = JSON.parse(raw);
+            if (Array.isArray(data) && data.includes(cleanNum)) {
+                return true;
+            }
+        }
+    } catch (e) {}
+    return false;
+}
+
+// Mark a customer as opted out / unsubscribed
+async function markAsUnsubscribed(mobile) {
+    const fs = await import('fs');
+    const cleanNum = String(mobile).replace(/\D/g, '');
+    let list = [];
+    try {
+        if (fs.existsSync(UNSUB_FILE_PATH)) {
+            const raw = fs.readFileSync(UNSUB_FILE_PATH, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) list = parsed;
+        }
+    } catch (e) {}
+    if (!list.includes(cleanNum)) {
+        list.push(cleanNum);
+        try {
+            fs.writeFileSync(UNSUB_FILE_PATH, JSON.stringify(list, null, 4));
+            console.log(`[Opt-Out] Added ${cleanNum} to unsubscribed contacts list.`);
+        } catch (e) {
+            console.error('[Opt-Out Error] Failed to write unsubscribed_contacts.json:', e.message);
+        }
+    }
+}
+
+// Anti-Ban Spintax & Dynamic Zero-Width Signature Generator (Ensures unique cryptographic hash per message)
+function processAntiBanCampaignText(text) {
+    if (!text) return '';
+    
+    // 1. Spintax parsing: {Hi|Hello|Namaste} -> Random selection
+    let output = text.replace(/\{([^{}]+)\}/g, (match, choices) => {
+        const options = choices.split('|');
+        return options[Math.floor(Math.random() * options.length)];
+    });
+
+    // 2. Add polite opt-out footer if not already present (Prevents customers clicking 'Report Spam')
+    if (!output.toLowerCase().includes('stop') && !output.toLowerCase().includes('unsubscribe')) {
+        output += '\n\n_Agar aap promotional updates nahi chahte, toh bas \'STOP\' reply karein._';
+    }
+
+    // 3. Append invisible zero-width space combinations for unique cryptographic hash per message
+    const zeroWidthChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+    let randomZeroWidthString = '';
+    for (let i = 0; i < 6; i++) {
+        randomZeroWidthString += zeroWidthChars[Math.floor(Math.random() * zeroWidthChars.length)];
+    }
+    output += randomZeroWidthString;
+
+    return output;
+}
+
 const messageQueue = [];
 let isProcessingQueue = false;
 let lastSentMobile = null;
 let lastSentTimestamp = 0;
+let totalSentInCurrentBatch = 0;
 
 async function processQueue() {
     if (isProcessingQueue) return;
@@ -790,6 +917,13 @@ async function processQueue() {
         }
 
         try {
+            // Check if customer has unsubscribed (Only for promotional campaigns)
+            if (type === 'campaign' && await isUnsubscribed(mobile)) {
+                console.log(`[Anti-Ban Opt-Out] Customer ${mobile} has unsubscribed. Skipping campaign to protect account.`);
+                resolve({ ok: true, status: 'skipped', reason: 'unsubscribed', mobile });
+                continue;
+            }
+
             // Duplicate Checkpoint: Skip if already sent to this customer today (tracks per debtor_id or mobile)
             const isAdminMobile = mobile === '9415345750' || mobile === '919415345750';
             const debtorId = payload?.debtor_id;
@@ -804,20 +938,51 @@ async function processQueue() {
                 }
             }
 
-            // Delay check: If mobile is different, enforce 8 second gap
+            // Anti-Ban Smart Throttle: After every 8 campaign messages (or 12 normal), take a 2.5-4 minute human rest break
+            const batchLimit = type === 'campaign' ? 8 : 12;
+            if (totalSentInCurrentBatch > 0 && totalSentInCurrentBatch % batchLimit === 0 && lastSentMobile !== mobile) {
+                const cooldownMs = Math.floor(Math.random() * 90000) + 150000; // 150 to 240 seconds pause (2.5 - 4 mins)
+                console.log(`\n==========================================================`);
+                console.log(`[Anti-Ban Shield] Batch limit (${batchLimit} messages) reached.`);
+                console.log(`Cooling down for ${Math.round(cooldownMs / 1000)}s to emulate human behavior and protect account...`);
+                console.log(`==========================================================\n`);
+                await delay(cooldownMs);
+            }
+
+            // Anti-Ban Human Jitter Delay (Randomized dynamic delay instead of fixed bot signature)
             if (lastSentMobile && lastSentMobile !== mobile) {
                 const elapsed = Date.now() - lastSentTimestamp;
-                const requiredDelay = 8000; // 8 seconds gap
+                // Use 25-50s delay for bulk campaigns, 12-22s for individual receipts/texts
+                const baseMin = type === 'campaign' ? 25000 : 12000;
+                const baseMax = type === 'campaign' ? 50000 : 22000;
+                const requiredDelay = Math.floor(Math.random() * (baseMax - baseMin + 1)) + baseMin;
+
                 if (elapsed < requiredDelay) {
                     const waitTime = requiredDelay - elapsed;
-                    console.log(`[Queue] Target changed to ${mobile}. Waiting ${waitTime}ms to enforce 8-sec gap...`);
+                    console.log(`[Anti-Ban Delay] Waiting ${(waitTime / 1000).toFixed(1)}s (Human Jitter) before messaging ${mobile}...`);
                     await delay(waitTime);
                 }
             } else if (lastSentMobile && lastSentMobile === mobile) {
-                console.log(`[Queue] Same target mobile (${mobile}) detected. Sending immediately without gap!`);
+                console.log(`[Queue] Same target mobile (${mobile}) detected. Adding 1.5s separation delay...`);
+                await delay(1500);
             }
 
             console.log(`[Queue] Processing message of type '${type}' for: ${mobile}`);
+            totalSentInCurrentBatch++;
+
+            // Human Presence & Typing Simulation before dispatching
+            try {
+                const targetChatId = await resolveChatId(mobile);
+                const chat = await waClient.getChatById(targetChatId);
+                if (chat) {
+                    await chat.sendStateTyping();
+                    const typingTime = Math.floor(Math.random() * 1500) + 1200; // 1.2s to 2.7s typing simulation
+                    await delay(typingTime);
+                }
+            } catch (presenceErr) {
+                // Safe to ignore if presence simulation fails
+            }
+
             let result;
 
             if (type === 'receipt') {
@@ -876,6 +1041,7 @@ async function processQueue() {
             } else if (type === 'campaign') {
                 const { message, file_content_base64, filename, mime_type } = payload;
                 const chatId = await resolveChatId(mobile);
+                const safeMessage = processAntiBanCampaignText(message);
                 
                 if (file_content_base64) {
                     const media = new MessageMedia(
@@ -883,16 +1049,48 @@ async function processQueue() {
                         file_content_base64,
                         filename || 'ad_image.jpg'
                     );
-                    // Send media with caption message (unified photo + caption text)
-                    await safeSendMessage(chatId, media, message ? { caption: message } : undefined);
-                    console.log('  [WhatsApp] Campaign media with caption sent successfully.');
-                } else if (message) {
-                    await safeSendMessage(chatId, message);
-                    console.log('  [WhatsApp] Campaign text sent successfully.');
+                    // Send media with caption message (unified photo + dynamic anti-ban caption text)
+                    await safeSendMessage(chatId, media, safeMessage ? { caption: safeMessage } : undefined);
+                    console.log('  [WhatsApp] Campaign media with anti-ban caption sent successfully.');
+                } else if (safeMessage) {
+                    await safeSendMessage(chatId, safeMessage);
+                    console.log('  [WhatsApp] Anti-ban campaign text sent successfully.');
                 } else {
                     throw new Error('Neither message nor image was provided for campaign');
                 }
                 result = { ok: true, mobile, status: 'sent' };
+            } else if (type === 'ticket') {
+                const { ticket_id, message, filename, file_content_base64 } = payload;
+                const chatId = await resolveChatId(mobile);
+
+                // 1. Send Text Message alert first
+                if (message) {
+                    await safeSendMessage(chatId, message);
+                    console.log('  [WhatsApp] Ticket text alert sent successfully.');
+                }
+
+                // 2. Generate or send PDF if requested
+                let pdfBase64 = file_content_base64 || null;
+                if (!pdfBase64 && ticket_id) {
+                    try {
+                        pdfBase64 = await generateTicketPdf(parseInt(ticket_id));
+                    } catch (pdfErr) {
+                        console.error(`[Queue Warning] Ticket PDF generation failed for ${mobile}:`, pdfErr.message);
+                    }
+                }
+
+                if (pdfBase64) {
+                    await delay(1000);
+                    const media = new MessageMedia(
+                        'application/pdf',
+                        pdfBase64,
+                        filename || `Ticket_${ticket_id}.pdf`
+                    );
+                    await safeSendMessage(chatId, media);
+                    console.log('  [WhatsApp] Ticket PDF document sent successfully.');
+                }
+
+                result = { ok: true, mobile, ticket_id, status: 'sent' };
             }
 
             // Mark as sent today in the log file (Only for debtor receipts/reminders)
@@ -1027,6 +1225,37 @@ app.post('/send-document', waAuth, (req, res) => {
         ok: true,
         status: 'queued',
         message: 'Document queued successfully'
+    });
+});
+
+// ── POST /send-ticket ─────────────────────────────────────────────────────────
+app.post('/send-ticket', waAuth, (req, res) => {
+    if (!isWaReady) {
+        return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
+    }
+
+    const { mobile, message, ticket_id, filename, file_content_base64 } = req.body;
+    const chatId = formatMobile(mobile);
+
+    if (!chatId) {
+        return res.status(400).json({ ok: false, error: `Invalid mobile number: ${mobile}` });
+    }
+
+    console.log(`[Queue Push] Ticket alert queued for: ${mobile} (Ticket ID: ${ticket_id})`);
+
+    messageQueue.push({
+        type: 'ticket',
+        mobile,
+        payload: { ticket_id, message, filename, file_content_base64 },
+        resolve: (result) => console.log(`[Queue Success] Ticket alert sent to ${mobile}`),
+        reject: (err) => console.error(`[Queue Failure] Failed for ${mobile}: ${err.message}`)
+    });
+    processQueue();
+
+    return res.json({
+        ok: true,
+        status: 'queued',
+        message: 'Ticket alert queued successfully'
     });
 });
 
@@ -1269,6 +1498,29 @@ setInterval(async () => {
         createWhatsAppClient();
     }
 }, 15 * 60 * 1000); // 15 minutes interval
+
+// ── Automated 4-Hour Travel Alert Scanner (Continuous 24/7 background daemon) ─
+let isScanningTravelAlerts = false;
+setInterval(async () => {
+    if (!isWaReady || isScanningTravelAlerts) return;
+    isScanningTravelAlerts = true;
+    try {
+        const cronUrl = WA_CONFIG.SITE_BASE_URL + '/api/travel-cron.php?token=YTSK_Cron_Sec_2026_Trv';
+        const resp = await fetch(cronUrl, {
+            headers: { 'ngrok-skip-browser-warning': '1' }
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data && data.sent_count > 0) {
+                console.log(`[Auto-Travel-Alert] 🚀 Automatically dispatched ${data.sent_count} 4-hour travel alerts.`);
+            }
+        }
+    } catch (e) {
+        // Silently catch background scan errors
+    } finally {
+        isScanningTravelAlerts = false;
+    }
+}, 60 * 1000); // Scans every 60 seconds
 
 let consecutiveDisconnects = 0;
 
