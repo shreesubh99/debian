@@ -30,7 +30,7 @@ CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 USER_HOME="${HOME:-/root}"
 
 WA_DIR=""
-for dir in "${CURRENT_DIR}/whatsapp-bot-server" "${USER_HOME}/whatsapp-bot-server" "/root/whatsapp-bot-server" "${CURRENT_DIR}/../whatsapp-bot-server" "${CURRENT_DIR}"; do
+for dir in "${CURRENT_DIR}/whatsapp-bot-server" "${USER_HOME}/whatsapp-bot-server" "/root/whatsapp-bot-server" "${CURRENT_DIR}/../whatsapp-bot-server" "${CURRENT_DIR}/../debian" "${USER_HOME}/debian" "/root/debian" "${CURRENT_DIR}"; do
     if [ -f "${dir}/start-debian.sh" ]; then
         WA_DIR="$(cd "${dir}" && pwd)"
         break
