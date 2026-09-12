@@ -8,7 +8,7 @@
 # 1. Ensure tmux is installed
 if ! command -v tmux &> /dev/null; then
     echo "[System] tmux is not installed. Installing tmux..."
-    sudo apt update && sudo apt install -y tmux
+    sudo apt-get update && sudo apt-get install -y tmux
 fi
 
 SESSION_NAME="office-servers"
@@ -16,8 +16,12 @@ SESSION_NAME="office-servers"
 # 2. Check if session already running
 if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
     echo "[System] Session '${SESSION_NAME}' is already running!"
-    echo "[System] Attaching to live windows now..."
-    tmux attach-session -t "${SESSION_NAME}"
+    if [ -t 0 ]; then
+        echo "[System] Attaching to live windows now..."
+        tmux attach-session -t "${SESSION_NAME}"
+    else
+        echo "[System] Background service active."
+    fi
     exit 0
 fi
 
@@ -26,17 +30,17 @@ CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 USER_HOME="${HOME:-/root}"
 
 WA_DIR=""
-for dir in "${CURRENT_DIR}/whatsapp-bot-server" "${USER_HOME}/whatsapp-bot-server" "/root/whatsapp-bot-server" "${CURRENT_DIR}"; do
+for dir in "${CURRENT_DIR}/whatsapp-bot-server" "${USER_HOME}/whatsapp-bot-server" "/root/whatsapp-bot-server" "${CURRENT_DIR}/../whatsapp-bot-server" "${CURRENT_DIR}"; do
     if [ -f "${dir}/start-debian.sh" ]; then
-        WA_DIR="${dir}"
+        WA_DIR="$(cd "${dir}" && pwd)"
         break
     fi
 done
 
 BANK_DIR=""
-for dir in "${CURRENT_DIR}/bankflow-audit/backend" "${USER_HOME}/bankflow-audit/backend" "/root/bankflow-audit/backend" "${CURRENT_DIR}/backend"; do
+for dir in "${CURRENT_DIR}/bankflow-audit/backend" "${USER_HOME}/bankflow-audit/backend" "/root/bankflow-audit/backend" "${CURRENT_DIR}/../bankflow-audit/backend" "${CURRENT_DIR}/backend" "${CURRENT_DIR}"; do
     if [ -f "${dir}/app/main.py" ]; then
-        BANK_DIR="${dir}"
+        BANK_DIR="$(cd "${dir}" && pwd)"
         break
     fi
 done
@@ -74,5 +78,10 @@ fi
 tmux set-option -t "${SESSION_NAME}" -g mouse on 2>/dev/null || true
 
 echo "[System] Both systems started in parallel!"
-echo "[System] Attaching to split screen... (To detach, press Ctrl+B then D)"
-tmux attach-session -t "${SESSION_NAME}"
+if [ -t 0 ]; then
+    echo "[System] Attaching to split screen... (To detach, press Ctrl+B then D)"
+    tmux attach-session -t "${SESSION_NAME}"
+else
+    echo "[System] Running in background under session '${SESSION_NAME}'."
+    echo "[System] To view live windows anytime, run: tmux a"
+fi
