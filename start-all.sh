@@ -68,8 +68,8 @@ tmux split-window -h -t "${SESSION_NAME}:0"
 tmux send-keys -t "${SESSION_NAME}:0.1" "clear" C-m
 tmux send-keys -t "${SESSION_NAME}:0.1" "echo '=== [WINDOW 2] BankFlow Audit System (Port 8080) ==='" C-m
 if [ -n "${BANK_DIR}" ]; then
-    tmux send-keys -t "${SESSION_NAME}:0.1" "cd '${BANK_DIR}' && source venv/bin/activate 2>/dev/null || true" C-m
-    tmux send-keys -t "${SESSION_NAME}:0.1" "uvicorn app.main:app --host 0.0.0.0 --port 8080" C-m
+    tmux send-keys -t "${SESSION_NAME}:0.1" "cd '${BANK_DIR}'" C-m
+    tmux send-keys -t "${SESSION_NAME}:0.1" "if [ -f '../run.sh' ]; then bash ../run.sh; elif [ -f 'run.sh' ]; then bash run.sh; else source venv/bin/activate 2>/dev/null && uvicorn app.main:app --host 0.0.0.0 --port 8080; fi" C-m
 else
     tmux send-keys -t "${SESSION_NAME}:0.1" "echo 'Error: bankflow-audit/backend directory not found!'" C-m
 fi

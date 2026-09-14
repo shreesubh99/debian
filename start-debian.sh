@@ -24,7 +24,7 @@ if command -v lsof &>/dev/null; then
     kill -9 $(lsof -t -i:8000) 2>/dev/null || true
     kill -9 $(lsof -t -i:3333) 2>/dev/null || true
 fi
-killall -9 chrome chromium chromium-browser ngrok 2>/dev/null || true
+killall -9 chrome chromium chromium-browser 2>/dev/null || true
 pkill -f -9 "whatsapp" 2>/dev/null || true
 pkill -f -9 "src.server:app" 2>/dev/null || true
 echo "[System] Cleanup completed. Ports 8000 and 3333 are now fully clear."
