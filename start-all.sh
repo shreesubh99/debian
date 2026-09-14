@@ -76,7 +76,7 @@ tmux new-session -d -s "${SESSION_NAME}" -n "Office-Suite"
 tmux send-keys -t "${SESSION_NAME}:0.0" "clear" C-m
 tmux send-keys -t "${SESSION_NAME}:0.0" "echo '=== [WINDOW 1] WhatsApp Bot & Python Agent ==='" C-m
 if [ -n "${WA_DIR}" ]; then
-    tmux send-keys -t "${SESSION_NAME}:0.0" "cd '${WA_DIR}' && bash start-debian.sh" C-m
+    tmux send-keys -t "${SESSION_NAME}:0.0" "cd '${WA_DIR}' && npm start" C-m
 else
     tmux send-keys -t "${SESSION_NAME}:0.0" "echo 'Warning: whatsapp-bot-server directory not found. Please clone it to ~/debian or ~/whatsapp-bot-server'" C-m
 fi
