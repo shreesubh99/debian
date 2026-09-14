@@ -36,7 +36,7 @@ apt-get install -y ngrok
 
 # 5. Configure Authtoken
 echo -e "\033[1;33m[4/4] Configuring Ngrok Authtoken...\033[0m"
-NGROK_TOKEN="31yGVbAOlk0V2i0vjxJLHGkLclx_6XXNTqL8u39utRass2MB8"
+NGROK_TOKEN="3JJNxFDVxF4bN1aEmOO5z8PdQl1_68npyebonUDGDWLogrCFS"
 
 # Configure for the user who called sudo, and also root
 if [ "$SUDO_USER" ]; then

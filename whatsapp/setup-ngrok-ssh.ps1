@@ -40,9 +40,9 @@ if ($null -eq $ngrokPath) {
     Write-Host "Ngrok CLI is already installed." -ForegroundColor Green
 }
 
-# 4. Configure Authtoken
-Write-Host "[3/3] Configuring Ngrok Authtoken..." -ForegroundColor Yellow
-$NGROK_TOKEN = "31yGVbAOlk0V2i0vjxJLHGkLclx_6XXNTqL8u39utRass2MB8"
+# 5. Configure Authtoken
+Write-Host "[4/4] Configuring Ngrok Authtoken..." -ForegroundColor Yellow
+$NGROK_TOKEN = "3JJNxFDVxF4bN1aEmOO5z8PdQl1_68npyebonUDGDWLogrCFS"
 & ngrok config add-authtoken $NGROK_TOKEN
 
 Write-Host "====================================================" -ForegroundColor Green
