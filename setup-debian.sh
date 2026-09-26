@@ -404,11 +404,53 @@ sudo systemctl enable ytsk-wifi-monitor.service
 echo "Systemd service 'ytsk-wifi-monitor.service' created and configured to run on boot!"
 echo ""
 
+# 10. Configure BankFlow Audit System Service (Auto-start on boot)
+echo "Checking for BankFlow Audit System installation..."
+BANKFLOW_DIR=""
+for check_path in "${ROOT_DIR}/../bankflow-audit" "${SCRIPT_DIR}/../bankflow-audit" "/home/${RUN_USER}/bankflow-audit" "/home/beck/bankflow-audit" "/var/www/html/bankflow-audit" "${ROOT_DIR}/bankflow-audit"; do
+    if [ -d "$check_path" ] && [ -f "$check_path/run.sh" ]; then
+        BANKFLOW_DIR="$(cd "$check_path" && pwd)"
+        break
+    fi
+done
+
+if [ -n "$BANKFLOW_DIR" ]; then
+    echo "Found BankFlow Audit System at: ${BANKFLOW_DIR}"
+    chmod +x "${BANKFLOW_DIR}/run.sh"
+    
+    BANKFLOW_SERVICE_FILE="/etc/systemd/system/bankflow-audit.service"
+    cat <<EOF | sudo tee "$BANKFLOW_SERVICE_FILE" > /dev/null
+[Unit]
+Description=BankFlow Audit Intelligence Service
+After=network.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+WorkingDirectory=${BANKFLOW_DIR}
+ExecStart=/bin/bash ${BANKFLOW_DIR}/run.sh
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable bankflow-audit.service
+    echo "Systemd service 'bankflow-audit.service' created and configured to run on boot!"
+    echo ""
+fi
+
 # Restart the services automatically so they run instantly on setup completion
 if [ "$NO_RESTART" = false ]; then
-    echo "Starting background services (ytsk-bot.service & ytsk-wifi-monitor.service)..."
+    echo "Starting background services (ytsk-bot.service, ytsk-wifi-monitor.service & bankflow-audit.service)..."
     sudo systemctl restart ytsk-bot.service
     sudo systemctl restart ytsk-wifi-monitor.service
+    if [ -n "$BANKFLOW_DIR" ]; then
+        sudo systemctl restart bankflow-audit.service
+    fi
 else
     echo "Running inside boot context. Skipping systemctl service restart to prevent infinite loops."
 fi
