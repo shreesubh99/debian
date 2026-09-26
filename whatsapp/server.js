@@ -989,10 +989,8 @@ async function processQueue() {
                 const { debtor_id, debtor_name, message, skip_pdf } = payload;
                 const chatId = await resolveChatId(mobile);
 
-                // 1. Try to generate PDF first
-                const shouldSkipPdf = skip_pdf === true || skip_pdf === 'true' ||
-                                      WA_CONFIG.SITE_BASE_URL.includes('localhost') ||
-                                      WA_CONFIG.SITE_BASE_URL.includes('127.0.0.1');
+                // 1. Try to generate PDF first (Only skip if explicitly requested via skip_pdf)
+                const shouldSkipPdf = skip_pdf === true || skip_pdf === 'true';
 
                 let pdfBase64 = null;
                 if (!shouldSkipPdf) {
@@ -1003,22 +1001,28 @@ async function processQueue() {
                     }
                 }
 
-                // 2. Send Text Message
-                if (message) {
+                // 2. Send Text Message (Ensure sent only once per queue item, preventing 3x duplicates on retry)
+                if (message && !item.textSent) {
                     await safeSendMessage(chatId, message);
+                    item.textSent = true;
                     console.log('  [WhatsApp] Text message sent successfully.');
                 }
 
-                // 3. Send PDF if generated successfully
-                if (pdfBase64) {
-                    await delay(1000); // 1 sec separation between text & PDF
-                    const media = new MessageMedia(
-                        'application/pdf',
-                        pdfBase64,
-                        `Receipt_${debtor_name || debtor_id}.pdf`
-                    );
-                    await safeSendMessage(chatId, media);
-                    console.log('  [WhatsApp] Receipt PDF sent successfully.');
+                // 3. Send PDF if generated successfully (Ensure sent only once per queue item)
+                if (pdfBase64 && !item.pdfSent) {
+                    try {
+                        await delay(1000); // 1 sec separation between text & PDF
+                        const media = new MessageMedia(
+                            'application/pdf',
+                            pdfBase64,
+                            `Receipt_${debtor_name || debtor_id}.pdf`
+                        );
+                        await safeSendMessage(chatId, media);
+                        item.pdfSent = true;
+                        console.log('  [WhatsApp] Receipt PDF sent successfully.');
+                    } catch (pdfSendErr) {
+                        console.error(`[Queue Warning] Failed to dispatch Receipt PDF for ${mobile}:`, pdfSendErr.message);
+                    }
                 }
                 result = { ok: true, mobile, debtor_id, status: 'sent' };
             } else if (type === 'text') {
@@ -1063,9 +1067,10 @@ async function processQueue() {
                 const { ticket_id, message, filename, file_content_base64 } = payload;
                 const chatId = await resolveChatId(mobile);
 
-                // 1. Send Text Message alert first
-                if (message) {
+                // 1. Send Text Message alert first (Ensure sent only once per queue item)
+                if (message && !item.textSent) {
                     await safeSendMessage(chatId, message);
+                    item.textSent = true;
                     console.log('  [WhatsApp] Ticket text alert sent successfully.');
                 }
 
@@ -1079,15 +1084,20 @@ async function processQueue() {
                     }
                 }
 
-                if (pdfBase64) {
-                    await delay(1000);
-                    const media = new MessageMedia(
-                        'application/pdf',
-                        pdfBase64,
-                        filename || `Ticket_${ticket_id}.pdf`
-                    );
-                    await safeSendMessage(chatId, media);
-                    console.log('  [WhatsApp] Ticket PDF document sent successfully.');
+                if (pdfBase64 && !item.pdfSent) {
+                    try {
+                        await delay(1000);
+                        const media = new MessageMedia(
+                            'application/pdf',
+                            pdfBase64,
+                            filename || `Ticket_${ticket_id}.pdf`
+                        );
+                        await safeSendMessage(chatId, media);
+                        item.pdfSent = true;
+                        console.log('  [WhatsApp] Ticket PDF document sent successfully.');
+                    } catch (pdfSendErr) {
+                        console.error(`[Queue Warning] Failed to dispatch Ticket PDF for ${mobile}:`, pdfSendErr.message);
+                    }
                 }
 
                 result = { ok: true, mobile, ticket_id, status: 'sent' };
