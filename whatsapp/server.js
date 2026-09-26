@@ -154,19 +154,45 @@ async function resolveChatId(mobile) {
     return num + '@c.us';
 }
 
-// Helper to safely send message avoiding "No LID for user" errors
+// Helper to safely send message avoiding "No LID for user" and "getter must include an id property" errors
 async function safeSendMessage(chatId, content, options = {}) {
+    let sendOptions = { ...options };
+    if (content && typeof content === 'object' && content.mimetype === 'application/pdf' && sendOptions.sendMediaAsDocument === undefined) {
+        sendOptions.sendMediaAsDocument = true;
+    }
+
+    // Step 1: Pre-populate and retrieve chat model from Store to ensure memoization getter has valid id
     try {
-        return await waClient.sendMessage(chatId, content, options);
+        const chat = await waClient.getChatById(chatId);
+        if (chat && typeof chat.sendMessage === 'function') {
+            return await chat.sendMessage(content, sendOptions);
+        }
+    } catch (chatErr) {
+        // Fall through to next attempts if chat.sendMessage encounters issue
+        console.warn(`[SafeSendMessage Step 1 Warning] getChatById send failed for ${chatId}: ${chatErr.message}`);
+    }
+
+    // Step 2: Direct waClient.sendMessage
+    try {
+        return await waClient.sendMessage(chatId, content, sendOptions);
     } catch (err) {
-        if (err.message && err.message.includes('No LID for user')) {
-            console.warn(`[SafeSendMessage Warning] 'No LID for user' on ${chatId}. Re-resolving via getNumberId...`);
+        const errMsg = err?.message || '';
+        if (errMsg.includes('No LID for user') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
+            console.warn(`[SafeSendMessage Warning] Internal WAWeb Store ID mismatch on ${chatId} (${errMsg}). Re-resolving via getNumberId...`);
             const rawNumber = String(chatId).split('@')[0].replace(/\D/g, '');
             try {
                 if (waClient && typeof waClient.getNumberId === 'function') {
                     const numberDetails = await waClient.getNumberId(rawNumber);
                     if (numberDetails && numberDetails._serialized) {
-                        return await waClient.sendMessage(numberDetails._serialized, content, options);
+                        const resolvedId = numberDetails._serialized;
+                        console.log(`[SafeSendMessage] Successfully re-resolved target ID: ${resolvedId}`);
+                        
+                        // Try loaded chat model on resolved ID
+                        const resolvedChat = await waClient.getChatById(resolvedId).catch(() => null);
+                        if (resolvedChat && typeof resolvedChat.sendMessage === 'function') {
+                            return await resolvedChat.sendMessage(content, sendOptions);
+                        }
+                        return await waClient.sendMessage(resolvedId, content, sendOptions);
                     }
                 }
             } catch (retryErr) {
