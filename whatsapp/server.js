@@ -785,6 +785,63 @@ async function generateTicketPdf(ticketId) {
     }
 }
 
+// Puppeteer helper to print PDF from any given full URL (e.g. print-receipt.php)
+async function generatePdfFromPageUrl(fullUrl) {
+    let url = fullUrl;
+    // Safety Auto-Rewrite: Ensure accounts.shreeshubhtravel.com/public is used if 127.0.0.1 or localhost is supplied
+    if (url.includes('127.0.0.1') || url.includes('localhost')) {
+        url = url.replace(/https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/Office%20Accounts)?/i, 'https://accounts.shreeshubhtravel.com');
+        if (!url.includes('/public/')) {
+            url = url.replace('accounts.shreeshubhtravel.com/', 'accounts.shreeshubhtravel.com/public/');
+        }
+    }
+    if (!url.includes('pdf_token=')) {
+        url += (url.includes('?') ? '&' : '?') + 'pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN);
+    }
+    if (!url.includes('print=')) {
+        url += '&print=1';
+    }
+    url += '&cb=' + Date.now();
+
+    console.log(`[WhatsApp Dynamic PDF] Generating from URL: ${url}`);
+
+    let tempBrowser = null;
+    let page = null;
+    try {
+        const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
+        delete pdfLaunchOptions.launcher;
+
+        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
+        page = await tempBrowser.newPage();
+
+        await page.evaluateOnNewDocument(() => {
+            window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
+        });
+
+        await page.goto(url, {
+            waitUntil: 'load',
+            timeout: 25000
+        });
+
+        await page.emulateMediaType('print');
+
+        const pdfBuffer = await page.pdf({
+            format: 'A4',
+            printBackground: true,
+            margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
+        });
+
+        await tempBrowser.close();
+        return Buffer.from(pdfBuffer).toString('base64');
+    } catch (err) {
+        if (tempBrowser) {
+            try { await tempBrowser.close(); } catch (e) {}
+        }
+        console.error('[WhatsApp Dynamic PDF] Failed to generate PDF:', err.message);
+        throw err;
+    }
+}
+
 // ── WhatsApp Auth Middleware ──────────────────────────────────────────────────
 function waAuth(req, res, next) {
     const token = req.headers['x-api-token'] || req.body?.token;
@@ -950,15 +1007,16 @@ async function processQueue() {
                 continue;
             }
 
-            // Duplicate Checkpoint: Skip if already sent to this customer today (tracks per debtor_id or mobile)
+            // Duplicate Checkpoint: Only skip if already sent to this DEBTOR customer for this specific debtor bill today
             const isAdminMobile = mobile === '9415345750' || mobile === '919415345750';
-            const debtorId = payload?.debtor_id;
-            const logKey = (type === 'receipt' || debtorId) ? `${mobile}_debtor_${debtorId}` : mobile;
+            const isDebtorMessage = (type === 'receipt' || Boolean(payload?.debtor_id));
 
-            if (type !== 'campaign' && !isAdminMobile) {
+            if (isDebtorMessage && !isAdminMobile) {
+                const debtorId = payload?.debtor_id || 'general';
+                const logKey = `${mobile}_debtor_${debtorId}`;
                 const alreadySentAt = await hasBeenSentToday(logKey);
                 if (alreadySentAt) {
-                    console.log(`[Queue Skip] Duplicate message for ${logKey} ignored. Already sent today at ${alreadySentAt}.`);
+                    console.log(`[Queue Skip] Duplicate debtor receipt for ${logKey} ignored. Already sent today at ${alreadySentAt}.`);
                     resolve({ ok: true, status: 'skipped', reason: 'already_sent_today', mobile, logKey });
                     continue;
                 }
@@ -1090,7 +1148,7 @@ async function processQueue() {
                 }
                 result = { ok: true, mobile, status: 'sent' };
             } else if (type === 'ticket') {
-                const { ticket_id, message, filename, file_content_base64 } = payload;
+                const { ticket_id, message, filename, file_content_base64, pdf_url } = payload;
                 const chatId = await resolveChatId(mobile);
 
                 // 1. Send Text Message alert first (Ensure sent only once per queue item)
@@ -1100,13 +1158,51 @@ async function processQueue() {
                     console.log('  [WhatsApp] Ticket text alert sent successfully.');
                 }
 
-                // 2. Generate or send PDF if requested
+                // 2. Reuse existing PDF or generate if requested
                 let pdfBase64 = file_content_base64 || null;
-                if (!pdfBase64 && ticket_id) {
+                const docFilename = filename || (ticket_id ? `Ticket_${ticket_id}.pdf` : null);
+
+                // Disk cache lookup: reuse existing PDF if already generated
+                if (!pdfBase64 && docFilename) {
                     try {
-                        pdfBase64 = await generateTicketPdf(parseInt(ticket_id));
+                        const isReceipt = docFilename.startsWith('Receipt_');
+                        const cacheDir = path.join(__dirname, '..', '..', 'storage', 'pdf_cache', isReceipt ? 'receipts' : 'tickets');
+                        const cacheFile = path.join(cacheDir, docFilename);
+                        if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 100) {
+                            pdfBase64 = fs.readFileSync(cacheFile).toString('base64');
+                            console.log(`  [WhatsApp PDF Cache] Reused existing cached PDF on disk: ${docFilename}`);
+                        }
+                    } catch (diskReadErr) {
+                        console.warn(`[WhatsApp PDF Cache Warning] Could not read disk cache for ${docFilename}:`, diskReadErr.message);
+                    }
+                }
+
+                if (!pdfBase64) {
+                    try {
+                        if (pdf_url) {
+                            pdfBase64 = await generatePdfFromPageUrl(pdf_url);
+                        } else if (ticket_id) {
+                            pdfBase64 = await generateTicketPdf(parseInt(ticket_id));
+                        }
+                        // Save newly generated PDF to disk cache to avoid duplicate rendering
+                        if (pdfBase64 && docFilename) {
+                            try {
+                                const isReceipt = docFilename.startsWith('Receipt_');
+                                const cacheDir = path.join(__dirname, '..', '..', 'storage', 'pdf_cache', isReceipt ? 'receipts' : 'tickets');
+                                if (!fs.existsSync(cacheDir)) {
+                                    fs.mkdirSync(cacheDir, { recursive: true });
+                                }
+                                const cacheFile = path.join(cacheDir, docFilename);
+                                if (!fs.existsSync(cacheFile)) {
+                                    fs.writeFileSync(cacheFile, Buffer.from(pdfBase64, 'base64'));
+                                    console.log(`  [WhatsApp PDF Cache] Saved newly generated PDF to disk: ${docFilename}`);
+                                }
+                            } catch (diskWriteErr) {
+                                console.warn(`[WhatsApp PDF Cache Warning] Could not cache ${docFilename}:`, diskWriteErr.message);
+                            }
+                        }
                     } catch (pdfErr) {
-                        console.error(`[Queue Warning] Ticket PDF generation failed for ${mobile}:`, pdfErr.message);
+                        console.error(`[Queue Warning] Ticket/Receipt PDF generation failed for ${mobile}:`, pdfErr.message);
                     }
                 }
 
@@ -1116,7 +1212,7 @@ async function processQueue() {
                         const media = new MessageMedia(
                             'application/pdf',
                             pdfBase64,
-                            filename || `Ticket_${ticket_id}.pdf`
+                            docFilename || `Ticket_${ticket_id}.pdf`
                         );
                         await safeSendMessage(chatId, media);
                         item.pdfSent = true;
@@ -1129,8 +1225,10 @@ async function processQueue() {
                 result = { ok: true, mobile, ticket_id, status: 'sent' };
             }
 
-            // Mark as sent today in the log file (Only for debtor receipts/reminders)
-            if (type !== 'campaign' && !isAdminMobile) {
+            // Mark as sent today in the log file (ONLY for debtor receipts/reminders)
+            if (isDebtorMessage && !isAdminMobile) {
+                const debtorId = payload?.debtor_id || 'general';
+                const logKey = `${mobile}_debtor_${debtorId}`;
                 await markAsSentToday(logKey);
             }
 
@@ -1270,19 +1368,19 @@ app.post('/send-ticket', waAuth, (req, res) => {
         return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
     }
 
-    const { mobile, message, ticket_id, filename, file_content_base64 } = req.body;
+    const { mobile, message, ticket_id, filename, file_content_base64, pdf_url } = req.body;
     const chatId = formatMobile(mobile);
 
     if (!chatId) {
         return res.status(400).json({ ok: false, error: `Invalid mobile number: ${mobile}` });
     }
 
-    console.log(`[Queue Push] Ticket alert queued for: ${mobile} (Ticket ID: ${ticket_id})`);
+    console.log(`[Queue Push] Ticket alert queued for: ${mobile} (Ticket ID: ${ticket_id}, PDF URL: ${pdf_url || 'default'})`);
 
     messageQueue.push({
         type: 'ticket',
         mobile,
-        payload: { ticket_id, message, filename, file_content_base64 },
+        payload: { ticket_id, message, filename, file_content_base64, pdf_url },
         resolve: (result) => console.log(`[Queue Success] Ticket alert sent to ${mobile}`),
         reject: (err) => console.error(`[Queue Failure] Failed for ${mobile}: ${err.message}`)
     });
@@ -1334,6 +1432,68 @@ app.post('/send-campaign', waAuth, async (req, res) => {
         ok: true,
         status: 'queued',
         message: 'Campaign message queued successfully'
+    });
+});
+
+// ── POST /send-allotment-token ───────────────────────────────────────────────
+app.post('/send-allotment-token', waAuth, async (req, res) => {
+    if (!isWaReady) {
+        return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
+    }
+
+    const {
+        customer_mobile,
+        driver_mobile,
+        customer_caption,
+        driver_message,
+        file_content_base64,
+        filename,
+        mime_type
+    } = req.body;
+
+    const queued = [];
+
+    // 1. Queue to Customer
+    if (customer_mobile) {
+        messageQueue.push({
+            type: 'campaign',
+            mobile: customer_mobile,
+            payload: {
+                message: customer_caption,
+                file_content_base64: file_content_base64 || null,
+                filename: filename || 'Booking-Token.jpg',
+                mime_type: mime_type || 'image/jpeg'
+            },
+            resolve: () => console.log(`[Queue Success] Allotment token sent to customer ${customer_mobile}`),
+            reject: (err) => console.error(`[Queue Failure] Allotment token failed for customer ${customer_mobile}: ${err.message}`)
+        });
+        queued.push('customer');
+    }
+
+    // 2. Queue to Driver
+    if (driver_mobile) {
+        messageQueue.push({
+            type: 'campaign',
+            mobile: driver_mobile,
+            payload: {
+                message: driver_message,
+                file_content_base64: file_content_base64 || null,
+                filename: filename || 'Trip-Briefing.jpg',
+                mime_type: mime_type || 'image/jpeg'
+            },
+            resolve: () => console.log(`[Queue Success] Allotment briefing sent to driver ${driver_mobile}`),
+            reject: (err) => console.error(`[Queue Failure] Allotment briefing failed for driver ${driver_mobile}: ${err.message}`)
+        });
+        queued.push('driver');
+    }
+
+    processQueue();
+
+    return res.json({
+        ok: true,
+        status: 'queued',
+        targets: queued,
+        message: 'Trip allotment notification queued successfully'
     });
 });
 
