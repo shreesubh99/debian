@@ -149,23 +149,41 @@ async function safeSendMessage(chatId, content, options = {}) {
         sendOptions.sendMediaAsDocument = true;
     }
 
-    // Normalize target phone JID for outgoing messages
-    let targetId = chatId;
-    if (typeof targetId === 'string' && !targetId.includes('@')) {
-        let num = targetId.replace(/\D/g, '');
-        if (num.startsWith('0')) num = num.substring(1);
-        if (!num.startsWith('91')) num = '91' + num;
-        targetId = num + '@c.us';
+    // 1. Normalize target phone number
+    let rawNumber = String(chatId).replace(/\D/g, '');
+    if (rawNumber.startsWith('0')) rawNumber = rawNumber.substring(1);
+    if (!rawNumber.startsWith('91')) rawNumber = '91' + rawNumber;
+    let targetId = rawNumber + '@c.us';
+
+    // 2. Pre-warm: Resolve user identity & register LID in WhatsApp Web Store
+    // Calling getNumberId queries WhatsApp's server and caches the recipient's LID into
+    // window.Store.LidUtils BEFORE sendMessage executes, eliminating "No LID for user" errors for new contacts.
+    try {
+        if (waClient && typeof waClient.getNumberId === 'function') {
+            const numberDetails = await waClient.getNumberId(rawNumber);
+            if (numberDetails && numberDetails._serialized) {
+                targetId = numberDetails._serialized;
+            }
+        }
+    } catch (e) {
+        console.warn(`[SafeSendMessage Pre-warm] getNumberId notice for ${rawNumber}: ${e.message}`);
     }
 
-    // Step 1: Direct waClient.sendMessage (Standard and most reliable for outgoing in whatsapp-web.js)
+    // 3. Pre-initialize Chat model in memory if not already loaded
+    try {
+        if (waClient && typeof waClient.getChatById === 'function') {
+            await waClient.getChatById(targetId).catch(() => null);
+        }
+    } catch (_) {}
+
+    // 4. Primary Send: Direct waClient.sendMessage (Now backed by pre-warmed LID & Chat cache)
     try {
         return await waClient.sendMessage(targetId, content, sendOptions);
     } catch (err) {
         const errMsg = err?.message || '';
         console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying via chat model...`);
 
-        // Step 2: Try loaded chat model
+        // 5. Fallback 1: Try loaded chat model
         try {
             const chat = await waClient.getChatById(targetId);
             if (chat && typeof chat.sendMessage === 'function') {
@@ -175,20 +193,21 @@ async function safeSendMessage(chatId, content, options = {}) {
             console.warn(`[SafeSendMessage Warning] chat.sendMessage also failed: ${chatErr.message}`);
         }
 
-        // Step 3: If error is LID mismatch or Store mismatch, re-resolve via getNumberId
-        if (errMsg.includes('No LID for user') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
-            const rawNumber = String(targetId).split('@')[0].replace(/\D/g, '');
+        // 6. Fallback 2: Force in-page Store QueryExist sync
+        if (errMsg.includes('No LID') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
             try {
-                if (waClient && typeof waClient.getNumberId === 'function') {
-                    const numberDetails = await waClient.getNumberId(rawNumber);
-                    if (numberDetails && numberDetails._serialized) {
-                        const resolvedId = numberDetails._serialized;
-                        console.log(`[SafeSendMessage] Re-resolved target ID: ${resolvedId}`);
-                        return await waClient.sendMessage(resolvedId, content, sendOptions);
-                    }
+                if (waClient.pupPage) {
+                    await waClient.pupPage.evaluate(async (jid) => {
+                        try {
+                            if (window.Store && window.Store.QueryExist) {
+                                await window.Store.QueryExist(jid);
+                            }
+                        } catch (e) {}
+                    }, targetId);
+                    return await waClient.sendMessage(targetId, content, sendOptions);
                 }
-            } catch (retryErr) {
-                console.error(`[SafeSendMessage Error] Retry getNumberId failed: ${retryErr.message}`);
+            } catch (evalErr) {
+                console.error(`[SafeSendMessage Error] In-browser LID sync retry failed: ${evalErr.message}`);
             }
         }
 
