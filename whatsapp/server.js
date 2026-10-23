@@ -142,6 +142,70 @@ async function resolveChatId(mobile) {
     return num + '@c.us';
 }
 
+// Helper to pre-warm contact identity and register LID into WhatsApp Web in-memory store
+async function ensureContactAndLid(targetJid) {
+    if (!waClient || !waClient.pupPage) return { jid: targetJid, lid: null };
+    try {
+        const result = await waClient.pupPage.evaluate(async (jid) => {
+            try {
+                if (!window.Store) return { jid, lid: null };
+
+                // 1. Create WhatsApp WID
+                let wid = null;
+                if (window.Store.WidFactory && window.Store.WidFactory.createWid) {
+                    try { wid = window.Store.WidFactory.createWid(jid); } catch (e) {}
+                }
+                if (!wid && window.Store.createWid) {
+                    try { wid = window.Store.createWid(jid); } catch (e) {}
+                }
+                if (!wid) return { jid, lid: null };
+
+                // 2. Query contact existence from WhatsApp server (forces server to return wid and lid)
+                let exist = null;
+                if (window.Store.QueryExist) {
+                    try { exist = await window.Store.QueryExist(wid); } catch (e) {}
+                }
+
+                const actualWid = (exist && exist.wid) ? exist.wid : wid;
+                const actualLid = (exist && exist.lid) ? exist.lid : null;
+
+                // 3. Register LID into LidUtils mapping
+                if (window.Store.LidUtils && actualLid) {
+                    try {
+                        if (window.Store.LidUtils.setLidForPn) {
+                            window.Store.LidUtils.setLidForPn(actualWid, actualLid);
+                        }
+                    } catch (e) {}
+                    try {
+                        if (window.Store.LidUtils.registerLid) {
+                            window.Store.LidUtils.registerLid(actualWid, actualLid);
+                        }
+                    } catch (e) {}
+                }
+
+                // 4. Force Contact and Chat model creation in local store
+                if (window.Store.Contact && window.Store.Contact.gadd) {
+                    try { window.Store.Contact.gadd(actualWid); } catch (e) {}
+                }
+                if (window.Store.Chat && window.Store.Chat.find) {
+                    try { await window.Store.Chat.find(actualWid); } catch (e) {}
+                }
+
+                return {
+                    jid: actualWid._serialized || (typeof actualWid === 'string' ? actualWid : jid),
+                    lid: actualLid ? (actualLid._serialized || (typeof actualLid === 'string' ? actualLid : null)) : null
+                };
+            } catch (err) {
+                return { jid, lid: null, err: err.message };
+            }
+        }, targetJid);
+
+        return result || { jid: targetJid, lid: null };
+    } catch (e) {
+        return { jid: targetJid, lid: null };
+    }
+}
+
 // Helper to safely send message avoiding "No LID for user" and "getter must include an id property" errors
 async function safeSendMessage(chatId, content, options = {}) {
     let sendOptions = { ...options };
@@ -149,65 +213,100 @@ async function safeSendMessage(chatId, content, options = {}) {
         sendOptions.sendMediaAsDocument = true;
     }
 
-    // 1. Normalize target phone number
-    let rawNumber = String(chatId).replace(/\D/g, '');
-    if (rawNumber.startsWith('0')) rawNumber = rawNumber.substring(1);
-    if (!rawNumber.startsWith('91')) rawNumber = '91' + rawNumber;
-    let targetId = rawNumber + '@c.us';
-
-    // 2. Pre-warm: Resolve user identity & register LID in WhatsApp Web Store
-    // Calling getNumberId queries WhatsApp's server and caches the recipient's LID into
-    // window.Store.LidUtils BEFORE sendMessage executes, eliminating "No LID for user" errors for new contacts.
-    try {
-        if (waClient && typeof waClient.getNumberId === 'function') {
-            const numberDetails = await waClient.getNumberId(rawNumber);
-            if (numberDetails && numberDetails._serialized) {
-                targetId = numberDetails._serialized;
-            }
+    // 1. Normalize target number
+    let rawNumber = '';
+    let targetId = chatId;
+    if (typeof targetId === 'string') {
+        if (targetId.endsWith('@lid')) {
+            // Already a LID JID
+        } else {
+            rawNumber = targetId.split('@')[0].replace(/\D/g, '');
+            if (rawNumber.startsWith('0')) rawNumber = rawNumber.substring(1);
+            if (rawNumber.length === 10 && !rawNumber.startsWith('91')) rawNumber = '91' + rawNumber;
+            targetId = rawNumber + '@c.us';
         }
-    } catch (e) {
-        console.warn(`[SafeSendMessage Pre-warm] getNumberId notice for ${rawNumber}: ${e.message}`);
     }
 
-    // 3. Pre-initialize Chat model in memory if not already loaded
+    // 2. Pre-warm: Query WhatsApp server to resolve and register the contact's LID in window.Store.LidUtils
+    let resolvedLid = null;
+    try {
+        const warmResult = await ensureContactAndLid(targetId);
+        if (warmResult && warmResult.jid) {
+            targetId = warmResult.jid;
+        }
+        if (warmResult && warmResult.lid) {
+            resolvedLid = warmResult.lid;
+        }
+    } catch (warmErr) {
+        console.warn(`[SafeSendMessage] Pre-warm notice for ${targetId}: ${warmErr.message}`);
+    }
+
+    // 3. Fallback identity resolve via getNumberId
+    if (rawNumber && !resolvedLid) {
+        try {
+            if (waClient && typeof waClient.getNumberId === 'function') {
+                const numberDetails = await waClient.getNumberId(rawNumber);
+                if (numberDetails && numberDetails._serialized) {
+                    targetId = numberDetails._serialized;
+                }
+            }
+        } catch (_) {}
+    }
+
+    // 4. Pre-load chat model into memory
     try {
         if (waClient && typeof waClient.getChatById === 'function') {
             await waClient.getChatById(targetId).catch(() => null);
         }
     } catch (_) {}
 
-    // 4. Primary Send: Direct waClient.sendMessage (Now backed by pre-warmed LID & Chat cache)
+    // 5. Primary Send Attempt
     try {
         return await waClient.sendMessage(targetId, content, sendOptions);
     } catch (err) {
         const errMsg = err?.message || '';
-        console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying via chat model...`);
+        console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying fallbacks...`);
 
-        // 5. Fallback 1: Try loaded chat model
+        // 6. Fallback A: If error is "No LID for user" and we have the resolved LID JID, send directly to LID
+        if ((errMsg.includes('No LID') || errMsg.includes('LID')) && resolvedLid) {
+            try {
+                console.log(`[SafeSendMessage] Retrying send directly to resolved LID: ${resolvedLid}`);
+                return await waClient.sendMessage(resolvedLid, content, sendOptions);
+            } catch (lidErr) {
+                console.warn(`[SafeSendMessage] Direct send to LID ${resolvedLid} also failed: ${lidErr.message}`);
+            }
+        }
+
+        // 7. Fallback B: Try via chat model sendMessage
         try {
             const chat = await waClient.getChatById(targetId);
             if (chat && typeof chat.sendMessage === 'function') {
                 return await chat.sendMessage(content, sendOptions);
             }
         } catch (chatErr) {
-            console.warn(`[SafeSendMessage Warning] chat.sendMessage also failed: ${chatErr.message}`);
+            console.warn(`[SafeSendMessage Fallback B] chat.sendMessage failed: ${chatErr.message}`);
         }
 
-        // 6. Fallback 2: Force in-page Store QueryExist sync
+        // 8. Fallback C: Force in-page Store QueryExist re-sync and final retry
         if (errMsg.includes('No LID') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
             try {
                 if (waClient.pupPage) {
+                    const retryTarget = resolvedLid || targetId;
                     await waClient.pupPage.evaluate(async (jid) => {
                         try {
-                            if (window.Store && window.Store.QueryExist) {
-                                await window.Store.QueryExist(jid);
+                            if (window.Store && window.Store.QueryExist && window.Store.WidFactory) {
+                                const w = window.Store.WidFactory.createWid(jid);
+                                const res = await window.Store.QueryExist(w);
+                                if (res && res.lid && window.Store.LidUtils && window.Store.LidUtils.setLidForPn) {
+                                    window.Store.LidUtils.setLidForPn(res.wid, res.lid);
+                                }
                             }
                         } catch (e) {}
-                    }, targetId);
-                    return await waClient.sendMessage(targetId, content, sendOptions);
+                    }, retryTarget);
+                    return await waClient.sendMessage(retryTarget, content, sendOptions);
                 }
             } catch (evalErr) {
-                console.error(`[SafeSendMessage Error] In-browser LID sync retry failed: ${evalErr.message}`);
+                console.error(`[SafeSendMessage Fallback C] In-browser LID re-sync retry failed: ${evalErr.message}`);
             }
         }
 
