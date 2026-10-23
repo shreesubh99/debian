@@ -133,24 +133,12 @@ async function resolvePhoneNumber(jid) {
     return jid.split('@')[0];
 }
 
-// Helper to resolve validated Chat ID using getNumberId (handles LID vs c.us)
+// Helper to resolve validated Chat ID (Always targets phone @c.us for outgoing initiate)
 async function resolveChatId(mobile) {
     if (!mobile) return '';
     let num = String(mobile).replace(/\D/g, '');
     if (num.startsWith('0')) num = num.substring(1);
     if (!num.startsWith('91')) num = '91' + num;
-    
-    try {
-        if (waClient && typeof waClient.getNumberId === 'function') {
-            const numberDetails = await waClient.getNumberId(num);
-            if (numberDetails && numberDetails._serialized) {
-                return numberDetails._serialized;
-            }
-        }
-    } catch (e) {
-        console.warn(`[ChatID Resolver Warning] getNumberId failed for ${num}: ${e.message}`);
-    }
-    
     return num + '@c.us';
 }
 
@@ -161,37 +149,41 @@ async function safeSendMessage(chatId, content, options = {}) {
         sendOptions.sendMediaAsDocument = true;
     }
 
-    // Step 1: Pre-populate and retrieve chat model from Store to ensure memoization getter has valid id
-    try {
-        const chat = await waClient.getChatById(chatId);
-        if (chat && typeof chat.sendMessage === 'function') {
-            return await chat.sendMessage(content, sendOptions);
-        }
-    } catch (chatErr) {
-        // Fall through to next attempts if chat.sendMessage encounters issue
-        console.warn(`[SafeSendMessage Step 1 Warning] getChatById send failed for ${chatId}: ${chatErr.message}`);
+    // Normalize target phone JID for outgoing messages
+    let targetId = chatId;
+    if (typeof targetId === 'string' && !targetId.includes('@')) {
+        let num = targetId.replace(/\D/g, '');
+        if (num.startsWith('0')) num = num.substring(1);
+        if (!num.startsWith('91')) num = '91' + num;
+        targetId = num + '@c.us';
     }
 
-    // Step 2: Direct waClient.sendMessage
+    // Step 1: Direct waClient.sendMessage (Standard and most reliable for outgoing in whatsapp-web.js)
     try {
-        return await waClient.sendMessage(chatId, content, sendOptions);
+        return await waClient.sendMessage(targetId, content, sendOptions);
     } catch (err) {
         const errMsg = err?.message || '';
+        console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying via chat model...`);
+
+        // Step 2: Try loaded chat model
+        try {
+            const chat = await waClient.getChatById(targetId);
+            if (chat && typeof chat.sendMessage === 'function') {
+                return await chat.sendMessage(content, sendOptions);
+            }
+        } catch (chatErr) {
+            console.warn(`[SafeSendMessage Warning] chat.sendMessage also failed: ${chatErr.message}`);
+        }
+
+        // Step 3: If error is LID mismatch or Store mismatch, re-resolve via getNumberId
         if (errMsg.includes('No LID for user') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
-            console.warn(`[SafeSendMessage Warning] Internal WAWeb Store ID mismatch on ${chatId} (${errMsg}). Re-resolving via getNumberId...`);
-            const rawNumber = String(chatId).split('@')[0].replace(/\D/g, '');
+            const rawNumber = String(targetId).split('@')[0].replace(/\D/g, '');
             try {
                 if (waClient && typeof waClient.getNumberId === 'function') {
                     const numberDetails = await waClient.getNumberId(rawNumber);
                     if (numberDetails && numberDetails._serialized) {
                         const resolvedId = numberDetails._serialized;
-                        console.log(`[SafeSendMessage] Successfully re-resolved target ID: ${resolvedId}`);
-                        
-                        // Try loaded chat model on resolved ID
-                        const resolvedChat = await waClient.getChatById(resolvedId).catch(() => null);
-                        if (resolvedChat && typeof resolvedChat.sendMessage === 'function') {
-                            return await resolvedChat.sendMessage(content, sendOptions);
-                        }
+                        console.log(`[SafeSendMessage] Re-resolved target ID: ${resolvedId}`);
                         return await waClient.sendMessage(resolvedId, content, sendOptions);
                     }
                 }
@@ -199,6 +191,7 @@ async function safeSendMessage(chatId, content, options = {}) {
                 console.error(`[SafeSendMessage Error] Retry getNumberId failed: ${retryErr.message}`);
             }
         }
+
         throw err;
     }
 }
@@ -690,33 +683,56 @@ function formatMobile(mobile) {
 }
 
 // Puppeteer helper to print PDF from URL (Launches dedicated clean browser instance for 100% reliability)
-async function generateReceiptPdf(debtorId) {
-    const url = WA_CONFIG.SITE_BASE_URL + WA_CONFIG.RECEIPT_PATH
-              + '?id=' + debtorId
-              + '&pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN)
-              + '&print=1'
-              + '&cb=' + Date.now();
+async function generateReceiptPdf(debtorId, customUrl = null) {
+    let url = customUrl || (WA_CONFIG.SITE_BASE_URL + WA_CONFIG.RECEIPT_PATH + '?id=' + debtorId);
+
+    // Safety Auto-Rewrite: Ensure accounts.shreeshubhtravel.com/public is used if 127.0.0.1 or localhost is supplied
+    if (url.includes('127.0.0.1') || url.includes('localhost')) {
+        url = url.replace(/https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/Office%20Accounts)?/i, 'https://accounts.shreeshubhtravel.com');
+        if (!url.includes('/public/')) {
+            url = url.replace('accounts.shreeshubhtravel.com/', 'accounts.shreeshubhtravel.com/public/');
+        }
+    }
+
+    if (!url.includes('pdf_token=')) {
+        url += (url.includes('?') ? '&' : '?') + 'pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN);
+    }
+    if (!url.includes('print=')) {
+        url += '&print=1';
+    }
+    url += '&cb=' + Date.now();
 
     console.log(`[WhatsApp PDF] Generating from URL: ${url}`);
 
-    let tempBrowser = null;
     let page = null;
+    let tempBrowser = null;
     try {
-        const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
-        delete pdfLaunchOptions.launcher; // Safeguard against recursion loop in puppeteer-extra
+        // Preference 1: Reuse active waClient browser instance (zero memory overhead, fastest)
+        if (waClient && waClient.pupBrowser && typeof waClient.pupBrowser.newPage === 'function') {
+            try {
+                page = await waClient.pupBrowser.newPage();
+            } catch (browserErr) {
+                console.warn('[WhatsApp PDF] pupBrowser.newPage failed, falling back to clean launch:', browserErr.message);
+                page = null;
+            }
+        }
 
-        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
+        // Preference 2: Launch dedicated clean headless browser
+        if (!page) {
+            const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
+            delete pdfLaunchOptions.launcher;
+            tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
+            page = await tempBrowser.newPage();
+        }
 
-        page = await tempBrowser.newPage();
-
-        // Override window.print inside the Puppeteer browser so it does nothing (prevents call stack crashes)
+        // Override window.print inside the Puppeteer browser so it does nothing
         await page.evaluateOnNewDocument(() => {
             window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
         });
 
         await page.goto(url, {
-            waitUntil: 'load', // Wait for basic page load instead of networkidle0
-            timeout: 20000     // Lower timeout to 20 seconds
+            waitUntil: 'load',
+            timeout: 25000
         });
 
         await page.emulateMediaType('print');
@@ -727,11 +743,18 @@ async function generateReceiptPdf(debtorId) {
             margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
         });
 
-        await tempBrowser.close();
+        if (tempBrowser) {
+            try { await tempBrowser.close(); } catch (e) {}
+        } else if (page) {
+            try { await page.close(); } catch (e) {}
+        }
+
         return Buffer.from(pdfBuffer).toString('base64');
     } catch (err) {
         if (tempBrowser) {
             try { await tempBrowser.close(); } catch (e) {}
+        } else if (page) {
+            try { await page.close(); } catch (e) {}
         }
         console.error('[WhatsApp PDF] Failed to generate PDF:', err.message);
         throw err;
@@ -952,27 +975,19 @@ async function markAsUnsubscribed(mobile) {
 }
 
 // Anti-Ban Spintax & Dynamic Zero-Width Signature Generator (Ensures unique cryptographic hash per message)
-function processAntiBanCampaignText(text) {
+function processAntiBanCampaignText(text, customerName = '') {
     if (!text) return '';
     
-    // 1. Spintax parsing: {Hi|Hello|Namaste} -> Random selection
-    let output = text.replace(/\{([^{}]+)\}/g, (match, choices) => {
+    let output = text;
+    if (customerName) {
+        output = output.replace(/\{name\}/gi, customerName);
+    }
+
+    // Spintax parsing: {Hi|Hello|Namaste} -> Random selection ONLY if choices contain '|'
+    output = output.replace(/\{([^{}|]+\|[^{}]+)\}/g, (match, choices) => {
         const options = choices.split('|');
         return options[Math.floor(Math.random() * options.length)];
     });
-
-    // 2. Add polite opt-out footer if not already present (Prevents customers clicking 'Report Spam')
-    if (!output.toLowerCase().includes('stop') && !output.toLowerCase().includes('unsubscribe')) {
-        output += '\n\n_Agar aap promotional updates nahi chahte, toh bas \'STOP\' reply karein._';
-    }
-
-    // 3. Append invisible zero-width space combinations for unique cryptographic hash per message
-    const zeroWidthChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-    let randomZeroWidthString = '';
-    for (let i = 0; i < 6; i++) {
-        randomZeroWidthString += zeroWidthChars[Math.floor(Math.random() * zeroWidthChars.length)];
-    }
-    output += randomZeroWidthString;
 
     return output;
 }
@@ -1022,28 +1037,16 @@ async function processQueue() {
                 }
             }
 
-            // Anti-Ban Smart Throttle: After every 8 campaign messages (or 12 normal), take a 2.5-4 minute human rest break
-            const batchLimit = type === 'campaign' ? 8 : 12;
-            if (totalSentInCurrentBatch > 0 && totalSentInCurrentBatch % batchLimit === 0 && lastSentMobile !== mobile) {
-                const cooldownMs = Math.floor(Math.random() * 90000) + 150000; // 150 to 240 seconds pause (2.5 - 4 mins)
-                console.log(`\n==========================================================`);
-                console.log(`[Anti-Ban Shield] Batch limit (${batchLimit} messages) reached.`);
-                console.log(`Cooling down for ${Math.round(cooldownMs / 1000)}s to emulate human behavior and protect account...`);
-                console.log(`==========================================================\n`);
-                await delay(cooldownMs);
-            }
-
-            // Anti-Ban Human Jitter Delay (Randomized dynamic delay instead of fixed bot signature)
+            // Human Jitter Delay: 4-7s for campaigns, 2-4s for receipts/texts
             if (lastSentMobile && lastSentMobile !== mobile) {
                 const elapsed = Date.now() - lastSentTimestamp;
-                // Use 25-50s delay for bulk campaigns, 12-22s for individual receipts/texts
-                const baseMin = type === 'campaign' ? 25000 : 12000;
-                const baseMax = type === 'campaign' ? 50000 : 22000;
+                const baseMin = type === 'campaign' ? 4000 : 2000;
+                const baseMax = type === 'campaign' ? 7000 : 4000;
                 const requiredDelay = Math.floor(Math.random() * (baseMax - baseMin + 1)) + baseMin;
 
                 if (elapsed < requiredDelay) {
                     const waitTime = requiredDelay - elapsed;
-                    console.log(`[Anti-Ban Delay] Waiting ${(waitTime / 1000).toFixed(1)}s (Human Jitter) before messaging ${mobile}...`);
+                    console.log(`[Queue Delay] Waiting ${(waitTime / 1000).toFixed(1)}s before messaging ${mobile}...`);
                     await delay(waitTime);
                 }
             } else if (lastSentMobile && lastSentMobile === mobile) {
@@ -1054,23 +1057,10 @@ async function processQueue() {
             console.log(`[Queue] Processing message of type '${type}' for: ${mobile}`);
             totalSentInCurrentBatch++;
 
-            // Human Presence & Typing Simulation before dispatching
-            try {
-                const targetChatId = await resolveChatId(mobile);
-                const chat = await waClient.getChatById(targetChatId);
-                if (chat) {
-                    await chat.sendStateTyping();
-                    const typingTime = Math.floor(Math.random() * 1500) + 1200; // 1.2s to 2.7s typing simulation
-                    await delay(typingTime);
-                }
-            } catch (presenceErr) {
-                // Safe to ignore if presence simulation fails
-            }
-
             let result;
 
             if (type === 'receipt') {
-                const { debtor_id, debtor_name, message, skip_pdf } = payload;
+                const { debtor_id, debtor_name, message, skip_pdf, pdf_url } = payload;
                 const chatId = await resolveChatId(mobile);
 
                 // 1. Try to generate PDF first (Only skip if explicitly requested via skip_pdf)
@@ -1079,7 +1069,7 @@ async function processQueue() {
                 let pdfBase64 = null;
                 if (!shouldSkipPdf) {
                     try {
-                        pdfBase64 = await generateReceiptPdf(parseInt(debtor_id));
+                        pdfBase64 = await generateReceiptPdf(parseInt(debtor_id), pdf_url || null);
                     } catch (pdfErr) {
                         console.error(`[Queue Warning] PDF generation failed for ${mobile}, falling back to text-only:`, pdfErr.message);
                     }
@@ -1089,7 +1079,7 @@ async function processQueue() {
                 if (message && !item.textSent) {
                     await safeSendMessage(chatId, message);
                     item.textSent = true;
-                    console.log('  [WhatsApp] Text message sent successfully.');
+                    console.log(`  [WhatsApp] Debtor text message sent successfully to ${mobile}.`);
                 }
 
                 // 3. Send PDF if generated successfully (Ensure sent only once per queue item)
@@ -1103,12 +1093,12 @@ async function processQueue() {
                         );
                         await safeSendMessage(chatId, media);
                         item.pdfSent = true;
-                        console.log('  [WhatsApp] Receipt PDF sent successfully.');
+                        console.log(`  [WhatsApp] Debtor receipt PDF sent successfully to ${mobile}.`);
                     } catch (pdfSendErr) {
                         console.error(`[Queue Warning] Failed to dispatch Receipt PDF for ${mobile}:`, pdfSendErr.message);
                     }
                 }
-                result = { ok: true, mobile, debtor_id, status: 'sent' };
+                result = { ok: true, mobile, debtor_id, status: 'sent', has_pdf: Boolean(pdfBase64) };
             } else if (type === 'text') {
                 const { message } = payload;
                 const chatId = await resolveChatId(mobile);
@@ -1127,9 +1117,9 @@ async function processQueue() {
                 console.log('  [WhatsApp] Document sent successfully.');
                 result = { ok: true, mobile, status: 'sent' };
             } else if (type === 'campaign') {
-                const { message, file_content_base64, filename, mime_type } = payload;
+                const { message, file_content_base64, filename, mime_type, name } = payload;
                 const chatId = await resolveChatId(mobile);
-                const safeMessage = processAntiBanCampaignText(message);
+                const safeMessage = processAntiBanCampaignText(message, name || '');
                 
                 if (file_content_base64) {
                     const media = new MessageMedia(
@@ -1137,12 +1127,12 @@ async function processQueue() {
                         file_content_base64,
                         filename || 'ad_image.jpg'
                     );
-                    // Send media with caption message (unified photo + dynamic anti-ban caption text)
+                    // Send media with caption message (unified photo + personalized caption text)
                     await safeSendMessage(chatId, media, safeMessage ? { caption: safeMessage } : undefined);
-                    console.log('  [WhatsApp] Campaign media with anti-ban caption sent successfully.');
+                    console.log(`  [WhatsApp] Campaign image with caption sent successfully to ${mobile}.`);
                 } else if (safeMessage) {
                     await safeSendMessage(chatId, safeMessage);
-                    console.log('  [WhatsApp] Anti-ban campaign text sent successfully.');
+                    console.log(`  [WhatsApp] Campaign text sent successfully to ${mobile}.`);
                 } else {
                     throw new Error('Neither message nor image was provided for campaign');
                 }
@@ -1266,7 +1256,7 @@ app.post('/send-receipt', waAuth, (req, res) => {
         });
     }
 
-    const { debtor_id, mobile, debtor_name, message, skip_pdf } = req.body;
+    const { debtor_id, mobile, debtor_name, message, skip_pdf, pdf_url } = req.body;
 
     if (!debtor_id || !mobile) {
         return res.status(400).json({ ok: false, error: 'debtor_id and mobile are required' });
@@ -1283,7 +1273,7 @@ app.post('/send-receipt', waAuth, (req, res) => {
     messageQueue.push({
         type: 'receipt',
         mobile,
-        payload: { debtor_id, debtor_name, message, skip_pdf },
+        payload: { debtor_id, debtor_name, message, skip_pdf, pdf_url },
         resolve: (result) => console.log(`[Queue Success] Receipt sent for ${mobile}`),
         reject: (err) => console.error(`[Queue Failure] Failed for ${mobile}: ${err.message}`)
     });
@@ -1399,30 +1389,20 @@ app.post('/send-campaign', waAuth, async (req, res) => {
         return res.status(503).json({ ok: false, error: 'WhatsApp is not connected.' });
     }
 
-    const { mobile, message, file_content_base64, filename, mime_type } = req.body;
+    const { mobile, message, file_content_base64, filename, mime_type, name } = req.body;
     const chatId = formatMobile(mobile);
 
     if (!chatId) {
         return res.status(400).json({ ok: false, error: `Invalid mobile number: ${mobile}` });
     }
 
-    // Verify if registered on WhatsApp
-    try {
-        const isRegistered = await waClient.isRegisteredUser(chatId);
-        if (!isRegistered) {
-            return res.json({ ok: false, error: 'NO_WHATSAPP', message: 'Number is not registered on WhatsApp.' });
-        }
-    } catch (e) {
-        console.warn(`[Registration Check Warning] Failed for ${mobile}:`, e.message);
-    }
-
-    console.log(`[Queue Push] Campaign message queued for: ${mobile}`);
+    console.log(`[Queue Push] Campaign message queued for: ${mobile}${name ? ` (${name})` : ''}`);
 
     // Add to queue in background
     messageQueue.push({
         type: 'campaign',
         mobile,
-        payload: { message, file_content_base64, filename, mime_type },
+        payload: { message, file_content_base64, filename, mime_type, name },
         resolve: (result) => console.log(`[Queue Success] Campaign sent to ${mobile}`),
         reject: (err) => console.error(`[Queue Failure] Campaign failed for ${mobile}: ${err.message}`)
     });
