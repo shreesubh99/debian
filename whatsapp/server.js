@@ -42,7 +42,7 @@ app.use(express.json({ limit: '50mb' }));
 // ═══════════════════════════════════════════════════════════
 // WhatsApp CONFIG & Client Setup
 // ═══════════════════════════════════════════════════════════
-let siteBase = process.env.SITE_BASE_URL || 'http://localhost/Office%20Accounts/public';
+let siteBase = process.env.SITE_BASE_URL || 'https://accounts.shreeshubhtravel.com/public';
 if (siteBase.includes('accounts.shreeshubhtravel.com') && !siteBase.includes('/public')) {
     siteBase = siteBase.replace(/\/+$/, '') + '/public';
 }
@@ -1567,6 +1567,20 @@ app.post('/logout', waAuth, async (req, res) => {
 // ── GET /health ───────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'YTSK WhatsApp Bot Server', port: PORT });
+});
+
+// ── POST /restart: Pull latest git code and restart server process ───────────
+app.post('/restart', waAuth, (req, res) => {
+    res.json({ ok: true, message: 'Pulling latest code and restarting server process...' });
+    setTimeout(() => {
+        try {
+            console.log('[System] Executing git pull before restarting...');
+            execSync('git fetch --all && git reset --hard origin/main', { stdio: 'inherit' });
+        } catch (e) {
+            console.error('[System] Git pull error:', e.message);
+        }
+        process.exit(0);
+    }, 800);
 });
 
 const waUrlFilePath = path.join(__dirname, '../../app/wa_url.json');
