@@ -1298,7 +1298,7 @@ async function processQueue() {
                     }
                 }
 
-                result = { ok: true, mobile, ticket_id, status: 'sent' };
+                result = { ok: true, mobile, ticket_id, status: 'sent', has_pdf: Boolean(pdfBase64) };
             }
 
             // Mark as sent today in the log file (ONLY for debtor receipts/reminders)
