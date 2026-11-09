@@ -1656,7 +1656,7 @@ app.get('/health', (req, res) => {
 });
 
 // ── GET /debug-pdf ────────────────────────────────────────────────────────────
-app.get('/debug-pdf', async (req, res) => {
+app.get('/debug-pdf', waAuth, async (req, res) => {
     const report = {
         platform: process.platform,
         arch: process.arch,
