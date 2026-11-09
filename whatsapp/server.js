@@ -800,11 +800,15 @@ function formatMobile(mobile) {
     return num + '@c.us';
 }
 
-// Puppeteer helper to print PDF from URL (Launches dedicated clean browser instance for 100% reliability)
-async function generateReceiptPdf(debtorId, customUrl = null) {
-    let url = customUrl || (WA_CONFIG.SITE_BASE_URL + WA_CONFIG.RECEIPT_PATH + '?id=' + debtorId);
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIFIED & RESILIENT PDF RENDERER (Optimized for Debian Linux Headless Chromium)
+// ═══════════════════════════════════════════════════════════════════════════════
+async function generatePdfFromUrl(rawUrl) {
+    if (!rawUrl) throw new Error('No target URL provided for PDF generation');
 
-    // Safety Auto-Rewrite: Ensure accounts.shreeshubhtravel.com/public is used if 127.0.0.1 or localhost is supplied
+    let url = String(rawUrl);
+
+    // 1. Safety Auto-Rewrite: Ensure accounts.shreeshubhtravel.com/public is used if 127.0.0.1 or localhost is supplied
     if (url.includes('127.0.0.1') || url.includes('localhost')) {
         url = url.replace(/https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/Office%20Accounts)?/i, 'https://accounts.shreeshubhtravel.com');
         if (!url.includes('/public/')) {
@@ -812,9 +816,21 @@ async function generateReceiptPdf(debtorId, customUrl = null) {
         }
     }
 
+    // Safety fallback: if print-pnr-ticket.php is referenced, fallback to print-receipt.php
+    if (url.includes('/print-pnr-ticket.php')) {
+        const matchTicket = url.match(/[?&]ticket_id=(\d+)/);
+        if (matchTicket) {
+            url = url.replace('/print-pnr-ticket.php', '/print-receipt.php').replace('ticket_id=', 'id=');
+        } else {
+            url = url.replace('/print-pnr-ticket.php', '/print-receipt.php');
+        }
+    }
+
+    // Ensure pdf_token is attached
     if (!url.includes('pdf_token=')) {
         url += (url.includes('?') ? '&' : '?') + 'pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN);
     }
+    // Ensure print=1 is attached
     if (!url.includes('print=')) {
         url += '&print=1';
     }
@@ -824,34 +840,73 @@ async function generateReceiptPdf(debtorId, customUrl = null) {
 
     let page = null;
     let tempBrowser = null;
+    let tempUserDataDir = null;
+
     try {
         // Preference 1: Reuse active waClient browser instance (zero memory overhead, fastest)
         if (waClient && waClient.pupBrowser && typeof waClient.pupBrowser.newPage === 'function') {
             try {
-                page = await waClient.pupBrowser.newPage();
+                if (typeof waClient.pupBrowser.isConnected !== 'function' || waClient.pupBrowser.isConnected()) {
+                    page = await waClient.pupBrowser.newPage();
+                    console.log('[WhatsApp PDF] Reusing active WhatsApp Client browser tab');
+                }
             } catch (browserErr) {
-                console.warn('[WhatsApp PDF] pupBrowser.newPage failed, falling back to clean launch:', browserErr.message);
+                console.warn('[WhatsApp PDF] waClient.pupBrowser.newPage failed, falling back to clean launch:', browserErr.message);
                 page = null;
             }
         }
 
-        // Preference 2: Launch dedicated clean headless browser
+        // Preference 2: Launch dedicated clean headless browser with isolated temp profile
         if (!page) {
-            const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
+            tempUserDataDir = path.join(os.tmpdir(), `pup_pdf_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+            const pdfLaunchOptions = {
+                ...puppeteerConfig,
+                headless: true,
+                userDataDir: tempUserDataDir,
+                args: [
+                    ...(puppeteerConfig.args || []),
+                    '--single-process',
+                    '--no-zygote',
+                    '--disable-gpu',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox'
+                ]
+            };
             delete pdfLaunchOptions.launcher;
+            console.log(`[WhatsApp PDF] Launching dedicated clean Puppeteer (userDataDir: ${tempUserDataDir})...`);
             tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
             page = await tempBrowser.newPage();
         }
 
-        // Override window.print inside the Puppeteer browser so it does nothing
+        // Configure viewport
+        await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+
+        // Override dialogs and window.print so print dialog does not block PDF export
         await page.evaluateOnNewDocument(() => {
             window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
+            window.alert = () => {};
+            window.confirm = () => true;
+            window.prompt = () => null;
         });
 
-        await page.goto(url, {
-            waitUntil: 'load',
-            timeout: 25000
-        });
+        // Fast & resilient navigation: wait for domcontentloaded
+        try {
+            await page.goto(url, {
+                waitUntil: 'domcontentloaded',
+                timeout: 20000
+            });
+        } catch (navErr) {
+            console.warn('[WhatsApp PDF] Navigation warning (domcontentloaded):', navErr.message);
+        }
+
+        // Wait a short moment for DOM renders and fonts to settle
+        try {
+            await page.evaluateHandle('document.fonts.ready', { timeout: 3000 });
+        } catch (e) {
+            // Non-blocking fallback
+        }
+        await delay(600);
 
         await page.emulateMediaType('print');
 
@@ -861,126 +916,39 @@ async function generateReceiptPdf(debtorId, customUrl = null) {
             margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
         });
 
-        if (tempBrowser) {
-            try { await tempBrowser.close(); } catch (e) {}
-        } else if (page) {
-            try { await page.close(); } catch (e) {}
-        }
-
+        console.log(`[WhatsApp PDF] Successfully generated PDF buffer (${pdfBuffer.length} bytes)`);
         return Buffer.from(pdfBuffer).toString('base64');
     } catch (err) {
-        if (tempBrowser) {
-            try { await tempBrowser.close(); } catch (e) {}
-        } else if (page) {
-            try { await page.close(); } catch (e) {}
-        }
         console.error('[WhatsApp PDF] Failed to generate PDF:', err.message);
         throw err;
+    } finally {
+        if (page) {
+            try { await page.close(); } catch (e) {}
+        }
+        if (tempBrowser) {
+            try { await tempBrowser.close(); } catch (e) {}
+        }
+        if (tempUserDataDir && fs.existsSync(tempUserDataDir)) {
+            try { fs.rmSync(tempUserDataDir, { recursive: true, force: true }); } catch (e) {}
+        }
     }
+}
+
+// Puppeteer helper to print PDF from Debtor Receipt URL
+async function generateReceiptPdf(debtorId, customUrl = null) {
+    let url = customUrl || (WA_CONFIG.SITE_BASE_URL + WA_CONFIG.RECEIPT_PATH + '?id=' + debtorId);
+    return await generatePdfFromUrl(url);
 }
 
 // Puppeteer helper to print Ticket PDF from URL
 async function generateTicketPdf(ticketId) {
-    const url = WA_CONFIG.SITE_BASE_URL + '/print-pnr-ticket.php'
-              + '?ticket_id=' + ticketId
-              + '&pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN)
-              + '&print=1'
-              + '&cb=' + Date.now();
-
-    console.log(`[WhatsApp Ticket PDF] Generating from URL: ${url}`);
-
-    let tempBrowser = null;
-    let page = null;
-    try {
-        const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
-        delete pdfLaunchOptions.launcher;
-
-        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
-        page = await tempBrowser.newPage();
-
-        await page.evaluateOnNewDocument(() => {
-            window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
-        });
-
-        await page.goto(url, {
-            waitUntil: 'load',
-            timeout: 25000
-        });
-
-        await page.emulateMediaType('print');
-
-        const pdfBuffer = await page.pdf({
-            format: 'A4',
-            printBackground: true,
-            margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
-        });
-
-        await tempBrowser.close();
-        return Buffer.from(pdfBuffer).toString('base64');
-    } catch (err) {
-        if (tempBrowser) {
-            try { await tempBrowser.close(); } catch (e) {}
-        }
-        console.error('[WhatsApp Ticket PDF] Failed to generate PDF:', err.message);
-        throw err;
-    }
+    const url = WA_CONFIG.SITE_BASE_URL + '/print-receipt.php?id=' + ticketId;
+    return await generatePdfFromUrl(url);
 }
 
 // Puppeteer helper to print PDF from any given full URL (e.g. print-receipt.php)
 async function generatePdfFromPageUrl(fullUrl) {
-    let url = fullUrl;
-    // Safety Auto-Rewrite: Ensure accounts.shreeshubhtravel.com/public is used if 127.0.0.1 or localhost is supplied
-    if (url.includes('127.0.0.1') || url.includes('localhost')) {
-        url = url.replace(/https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/Office%20Accounts)?/i, 'https://accounts.shreeshubhtravel.com');
-        if (!url.includes('/public/')) {
-            url = url.replace('accounts.shreeshubhtravel.com/', 'accounts.shreeshubhtravel.com/public/');
-        }
-    }
-    if (!url.includes('pdf_token=')) {
-        url += (url.includes('?') ? '&' : '?') + 'pdf_token=' + encodeURIComponent(WA_CONFIG.PDF_TOKEN);
-    }
-    if (!url.includes('print=')) {
-        url += '&print=1';
-    }
-    url += '&cb=' + Date.now();
-
-    console.log(`[WhatsApp Dynamic PDF] Generating from URL: ${url}`);
-
-    let tempBrowser = null;
-    let page = null;
-    try {
-        const pdfLaunchOptions = { ...puppeteerConfig, headless: true };
-        delete pdfLaunchOptions.launcher;
-
-        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
-        page = await tempBrowser.newPage();
-
-        await page.evaluateOnNewDocument(() => {
-            window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
-        });
-
-        await page.goto(url, {
-            waitUntil: 'load',
-            timeout: 25000
-        });
-
-        await page.emulateMediaType('print');
-
-        const pdfBuffer = await page.pdf({
-            format: 'A4',
-            printBackground: true,
-            margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
-        });
-
-        await tempBrowser.close();
-        return Buffer.from(pdfBuffer).toString('base64');
-    } catch (err) {
-        if (tempBrowser) {
-            try { await tempBrowser.close(); } catch (e) {}
-        }
-        console.error('[WhatsApp Dynamic PDF] Failed to generate PDF:', err.message);
-        throw err;
-    }
+    return await generatePdfFromUrl(fullUrl);
 }
 
 // ── WhatsApp Auth Middleware ──────────────────────────────────────────────────
@@ -1746,7 +1714,8 @@ app.post('/restart', waAuth, (req, res) => {
     setTimeout(() => {
         try {
             console.log('[System] Executing git pull before restarting...');
-            execSync('git fetch --all && git reset --hard origin/main', { stdio: 'inherit' });
+            const rootGitDir = path.join(__dirname, '..');
+            execSync('git fetch --all && git reset --hard origin/main', { cwd: rootGitDir, stdio: 'inherit' });
         } catch (e) {
             console.error('[System] Git pull error:', e.message);
         }

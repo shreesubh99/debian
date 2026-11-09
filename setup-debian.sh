@@ -41,17 +41,19 @@ fi
 # Pre-installation System-wide Port & Process Cleanup (Resolves Locked Ports/Chrome)
 echo "Performing pre-installation system cleanup as root..."
 
-# Stop background services
-systemctl stop ytsk-bot.service 2>/dev/null || true
-systemctl stop ytsk-wifi-monitor.service 2>/dev/null || true
+# Stop background services only if full setup restart mode
+if [ "$NO_RESTART" = false ]; then
+    systemctl stop ytsk-bot.service 2>/dev/null || true
+    systemctl stop ytsk-wifi-monitor.service 2>/dev/null || true
 
-# Force kill Node, Python, Chrome/Chromium, and Ngrok processes
-killall -9 node python python3 uvicorn chrome chromium chromium-browser ngrok 2>/dev/null || true
-pkill -f -9 node 2>/dev/null || true
-pkill -f -9 python 2>/dev/null || true
-pkill -f -9 uvicorn 2>/dev/null || true
-pkill -f -9 chrome 2>/dev/null || true
-pkill -f -9 chromium 2>/dev/null || true
+    # Force kill Node, Python, Chrome/Chromium, and Ngrok processes
+    killall -9 node python python3 uvicorn chrome chromium chromium-browser ngrok 2>/dev/null || true
+    pkill -f -9 node 2>/dev/null || true
+    pkill -f -9 python 2>/dev/null || true
+    pkill -f -9 uvicorn 2>/dev/null || true
+    pkill -f -9 chrome 2>/dev/null || true
+    pkill -f -9 chromium 2>/dev/null || true
+fi
 
 # Determine script directories for pre-cleaning lock files
 TEMP_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

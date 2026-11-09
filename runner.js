@@ -198,48 +198,53 @@ for (const mod of requiredModules) {
 
 console.log('[Runner] All Python dependencies are present and verified.');
 
-// 4. Start Python Agent
-console.log('[Runner] Spawning Python AI Agent...');
-const agentProcess = spawn(pythonCmd, ['-m', 'uvicorn', 'src.server:app', '--host', '127.0.0.1', '--port', '8000'], {
-    cwd: agentDir,
-    shell: true,
-    stdio: 'inherit'
-});
+// 4. Start Python Agent with Auto-Restart
+let agentProcess = null;
+function startAgent() {
+    console.log('[Runner] Spawning Python AI Agent...');
+    agentProcess = spawn(pythonCmd, ['-m', 'uvicorn', 'src.server:app', '--host', '127.0.0.1', '--port', '8000'], {
+        cwd: agentDir,
+        shell: true,
+        stdio: 'inherit'
+    });
 
-agentProcess.on('error', (err) => {
-    console.error('[Runner Error] Failed to start Python Agent process:', err.message);
-});
+    agentProcess.on('error', (err) => {
+        console.error('[Runner Error] Failed to start Python Agent process:', err.message);
+    });
 
-// 5. Start Node.js WhatsApp Bot
-console.log('[Runner] Spawning Node.js WhatsApp Bot...');
-const botProcess = spawn('node', ['server.js'], {
-    cwd: waDir,
-    shell: true,
-    stdio: 'inherit'
-});
+    agentProcess.on('close', (code) => {
+        console.warn(`[Runner Warning] Python AI Agent process closed with code ${code}. Respawning in 3 seconds...`);
+        setTimeout(startAgent, 3000);
+    });
+}
+startAgent();
 
-botProcess.on('error', (err) => {
-    console.error('[Runner Error] Failed to start Node.js WhatsApp Bot process:', err.message);
-});
+// 5. Start Node.js WhatsApp Bot with Auto-Restart
+let botProcess = null;
+function startBot() {
+    console.log('[Runner] Spawning Node.js WhatsApp Bot...');
+    botProcess = spawn('node', ['server.js'], {
+        cwd: waDir,
+        shell: true,
+        stdio: 'inherit'
+    });
 
-// Exit runner if either child process closes to trigger systemd auto-restart
-agentProcess.on('close', (code) => {
-    console.error(`[Runner Error] Python AI Agent process closed with code ${code}. Terminating runner...`);
-    try { botProcess.kill(); } catch (e) {}
-    process.exit(code || 1);
-});
+    botProcess.on('error', (err) => {
+        console.error('[Runner Error] Failed to start Node.js WhatsApp Bot process:', err.message);
+    });
 
-botProcess.on('close', (code) => {
-    console.error(`[Runner Error] Node.js WhatsApp Bot process closed with code ${code}. Terminating runner...`);
-    try { agentProcess.kill(); } catch (e) {}
-    process.exit(code || 1);
-});
+    botProcess.on('close', (code) => {
+        console.log(`[Runner] Node.js WhatsApp Bot process closed with code ${code}. Respawning in 2 seconds...`);
+        setTimeout(startBot, 2000);
+    });
+}
+startBot();
 
 // Handle graceful termination
 function shutdown() {
     console.log('\n[Runner] Stopping both processes...');
-    try { agentProcess.kill(); } catch (e) {}
-    try { botProcess.kill(); } catch (e) {}
+    try { if (agentProcess) agentProcess.kill(); } catch (e) {}
+    try { if (botProcess) botProcess.kill(); } catch (e) {}
     process.exit(0);
 }
 

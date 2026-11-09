@@ -47,9 +47,11 @@ echo "[System] Checking for updates and pulling latest code from GitHub..."
 git fetch --all 2>/dev/null || true
 git reset --hard origin/main 2>/dev/null || true
 
-# 3c. Run setup-debian.sh to synchronize environment (packages, swap, keys)
-echo "[System] Running setup-debian.sh to configure environment..."
-bash "${ROOT_DIR}/setup-debian.sh" --no-restart
+# 3c. Run setup-debian.sh only if dependencies are missing or --setup is requested
+if [ "$1" == "--setup" ] || ! command -v node &>/dev/null || ! command -v chromium &>/dev/null; then
+    echo "[System] Running setup-debian.sh to configure environment..."
+    bash "${ROOT_DIR}/setup-debian.sh" --no-restart
+fi
 
 
 # 4. Start the servers concurrently dropping root privileges
