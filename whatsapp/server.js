@@ -338,6 +338,8 @@ async function safeReply(msg, content, options = {}) {
 
 let isWaReady = false;
 let currentQrDataUrl = null;
+let waState = 'INITIALIZING';
+let waStateDetail = 'Starting client...';
 
 // Concurrency Queue Settings
 const activeSessions = new Map(); // key: cleanMobile, value: lastActiveTimestamp
@@ -532,6 +534,8 @@ function createWhatsAppClient() {
 
     waClient.on('qr', async (qr) => {
         try {
+            waState = 'QR_CODE_WAIT';
+            waStateDetail = 'Waiting for phone to scan QR Code';
             currentQrDataUrl = await QRCode.toDataURL(qr);
             console.log('[WhatsApp] New QR Code generated (Scan it on the UI dashboard).');
             
@@ -547,22 +551,37 @@ function createWhatsAppClient() {
     });
 
     waClient.on('loading_screen', (percent, message) => {
+        waState = 'LOADING';
+        waStateDetail = `${percent}% - ${message}`;
         console.log(`[WhatsApp Loading] ${percent}% - ${message}`);
     });
 
     waClient.on('auth_failure', (msg) => {
+        waState = 'AUTH_FAILURE';
+        waStateDetail = String(msg);
         console.error('[WhatsApp Auth Failure]', msg);
     });
 
     waClient.on('authenticated', () => {
+        waState = 'AUTHENTICATED';
+        waStateDetail = 'Session authenticated. Syncing chats...';
         console.log('[WhatsApp] Authenticated! Session saved.');
         currentQrDataUrl = null;
     });
 
     waClient.on('ready', async () => {
         isWaReady = true;
+        waState = 'READY';
+        waStateDetail = 'Client connected and ready';
         currentQrDataUrl = null;
         console.log('[WhatsApp] READY! Ready to send messages.');
+    });
+
+    waClient.on('disconnected', (reason) => {
+        isWaReady = false;
+        waState = 'DISCONNECTED';
+        waStateDetail = String(reason);
+        console.warn('[WhatsApp] Disconnected:', reason);
     });
 
     // Rate-limiter / Loop breaker for rapidly spamming automated bots
@@ -962,7 +981,14 @@ function waAuth(req, res, next) {
 
 // ── GET /status ───────────────────────────────────────────────────────────────
 app.get('/status', (req, res) => {
-    res.json({ ok: true, ready: isWaReady, qr: currentQrDataUrl, server: 'YTSK WhatsApp Bot Server v1.0' });
+    res.json({
+        ok: true,
+        ready: isWaReady,
+        qr: currentQrDataUrl,
+        state: waState,
+        detail: waStateDetail,
+        server: 'YTSK WhatsApp Bot Server v1.0'
+    });
 });
 
 // ═══════════════════════════════════════════════════════════
