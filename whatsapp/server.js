@@ -1687,6 +1687,59 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'YTSK WhatsApp Bot Server', port: PORT });
 });
 
+// ── GET /debug-pdf ────────────────────────────────────────────────────────────
+app.get('/debug-pdf', async (req, res) => {
+    const report = {
+        platform: process.platform,
+        arch: process.arch,
+        node_version: process.version,
+        free_mem_mb: Math.round(os.freemem() / 1024 / 1024),
+        total_mem_mb: Math.round(os.totalmem() / 1024 / 1024),
+        chrome_path: CHROME_PATH,
+        chrome_path_exists: CHROME_PATH ? fs.existsSync(CHROME_PATH) : false,
+        isWaReady,
+        hasPupBrowser: Boolean(waClient?.pupBrowser),
+    };
+
+    // Test 1: Debtor receipt PDF
+    try {
+        const t0 = Date.now();
+        const testDebtorUrl = 'https://accounts.shreeshubhtravel.com/public/print-debtor-bill.php?id=12&pdf_token=YTSK_PDF_Token_2024_$ecure';
+        const pdf1 = await generateReceiptPdf(12, testDebtorUrl);
+        report.debtor_pdf = {
+            ok: true,
+            base64_length: pdf1?.length || 0,
+            elapsed_ms: Date.now() - t0,
+        };
+    } catch (e1) {
+        report.debtor_pdf = {
+            ok: false,
+            error: e1.message,
+            stack: e1.stack,
+        };
+    }
+
+    // Test 2: Travel reminder receipt PDF
+    try {
+        const t1 = Date.now();
+        const testReceiptUrl = 'https://accounts.shreeshubhtravel.com/public/print-receipt.php?id=1&pdf_token=YTSK_PDF_Token_2024_$ecure';
+        const pdf2 = await generatePdfFromPageUrl(testReceiptUrl);
+        report.travel_pdf = {
+            ok: true,
+            base64_length: pdf2?.length || 0,
+            elapsed_ms: Date.now() - t1,
+        };
+    } catch (e2) {
+        report.travel_pdf = {
+            ok: false,
+            error: e2.message,
+            stack: e2.stack,
+        };
+    }
+
+    return res.json(report);
+});
+
 // ── POST /restart: Pull latest git code and restart server process ───────────
 app.post('/restart', waAuth, (req, res) => {
     res.json({ ok: true, message: 'Pulling latest code and restarting server process...' });
