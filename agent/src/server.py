@@ -216,3 +216,20 @@ def provider_status_endpoint():
             }
         }
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    import subprocess
+
+    # Pre-clear port 8000 if running directly on Linux / Debian
+    if os.name != 'nt':
+        try:
+            subprocess.run("fuser -k -9 8000/tcp 2>/dev/null || /usr/sbin/fuser -k -9 8000/tcp 2>/dev/null || true", shell=True)
+            subprocess.run("pkill -9 -f 'uvicorn.*8000' 2>/dev/null || true", shell=True)
+            subprocess.run("pkill -9 -f 'src.server:app' 2>/dev/null || true", shell=True)
+        except Exception:
+            pass
+
+    print("[Python Agent] Port 8000 cleared and ready. Starting Uvicorn server...")
+    uvicorn.run("src.server:app", host="127.0.0.1", port=8000, reload=False)

@@ -95,7 +95,7 @@ apt-get install -y wget gnupg ca-certificates procps libxss1 \
     libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
     libasound2 libpango-1.0-0 libcairo2 libx11-xcb1 libxfixes3 \
-    libxi6 libxtst6 libnss3 chromium
+    libxi6 libxtst6 libnss3 chromium psmisc lsof
 
 # 6. Configure project structures and self-healing requirements
 echo "[5/5] Configuring project requirements..."

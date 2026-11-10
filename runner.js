@@ -6,27 +6,54 @@ console.log('==========================================================');
 console.log('   Starting WhatsApp Bot & Python AI Agent Concurrently   ');
 console.log('==========================================================');
 
-// Pre-cleanup ports 3333 and 8000 to resolve Port Error on Debian/Linux
-if (process.platform !== 'win32') {
-    console.log('[Runner] Performing pre-startup port cleanup (killing stale processes on 3333 and 8000)...');
-    try {
-        // Run exact requested kill command for ports 8000 and 3333
-        execSync("sudo kill -9 $(sudo lsof -t -i:8000) 2>/dev/null || true");
-        execSync("sudo kill -9 $(sudo lsof -t -i:3333) 2>/dev/null || true");
-        
-        // Additional cleanups to make sure nothing is missed
-        execSync("fuser -k 3333/tcp 2>/dev/null || true");
-        execSync("fuser -k 8000/tcp 2>/dev/null || true");
-        execSync("sudo fuser -k 3333/tcp 2>/dev/null || true");
-        execSync("sudo fuser -k 8000/tcp 2>/dev/null || true");
-        execSync("kill -9 $(lsof -t -i:3333) 2>/dev/null || true");
-        execSync("kill -9 $(lsof -t -i:8000) 2>/dev/null || true");
-        
-        console.log('[Runner] Ports cleaned successfully.');
-    } catch (cleanErr) {
-        console.warn(`[Runner Warning] Failed to clean ports: ${cleanErr.message}`);
+// Robust function to forcefully free a port on Debian/Linux and Windows
+function clearPort(port) {
+    if (process.platform === 'win32') {
+        try {
+            const out = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+            for (const line of out.split('\n')) {
+                const parts = line.trim().split(/\s+/);
+                const pid = parts[parts.length - 1];
+                if (pid && pid !== '0' && !isNaN(pid)) {
+                    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+                }
+            }
+        } catch (e) {}
+        return;
     }
+
+    console.log(`[Port Cleaner] Clearing port ${port}...`);
+    try {
+        // 1. Process specific kills
+        if (port === 8000) {
+            execSync('pkill -9 -f "uvicorn.*8000" 2>/dev/null || sudo pkill -9 -f "uvicorn.*8000" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+            execSync('pkill -9 -f "src.server:app" 2>/dev/null || sudo pkill -9 -f "src.server:app" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        } else if (port === 3333) {
+            execSync('pkill -9 -f "whatsapp.*server.js" 2>/dev/null || sudo pkill -9 -f "whatsapp.*server.js" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        }
+
+        // 2. Clear via ss (works natively on Debian without requiring fuser or lsof)
+        execSync(`for pid in $(ss -lptn "sport = :${port}" 2>/dev/null | grep -oP "pid=\\K[0-9]+" | sort -u); do kill -9 $pid 2>/dev/null || sudo kill -9 $pid 2>/dev/null || true; done`, { shell: '/bin/bash', stdio: 'ignore' });
+
+        // 3. Clear via fuser (checks standard /usr/sbin path if not in regular PATH)
+        execSync(`fuser -k -9 ${port}/tcp 2>/dev/null || /usr/sbin/fuser -k -9 ${port}/tcp 2>/dev/null || sudo fuser -k -9 ${port}/tcp 2>/dev/null || true`, { shell: '/bin/bash', stdio: 'ignore' });
+
+        // 4. Clear via lsof
+        execSync(`lsof -ti :${port} 2>/dev/null | xargs -r kill -9 2>/dev/null || sudo lsof -ti :${port} 2>/dev/null | sudo xargs -r kill -9 2>/dev/null || true`, { shell: '/bin/bash', stdio: 'ignore' });
+
+        // Settle time for OS TCP socket release
+        execSync('sleep 0.5 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+    } catch (cleanErr) {
+        // Silent catch
+    }
+    console.log(`[Port Cleaner] Port ${port} is cleared and ready.`);
 }
+
+// Pre-cleanup ports 3333 and 8000 to resolve Port Error on Debian/Linux
+console.log('[Runner] Performing pre-startup port cleanup (ports 8000 and 3333)...');
+clearPort(8000);
+clearPort(3333);
+console.log('[Runner] Ports 8000 and 3333 are fully cleared and ready.');
 
 // 1. Auto-detect directories
 let rootDir = __dirname;
@@ -201,7 +228,8 @@ console.log('[Runner] All Python dependencies are present and verified.');
 // 4. Start Python Agent with Auto-Restart
 let agentProcess = null;
 function startAgent() {
-    console.log('[Runner] Spawning Python AI Agent...');
+    clearPort(8000);
+    console.log('[Runner] Spawning Python AI Agent on port 8000...');
     agentProcess = spawn(pythonCmd, ['-m', 'uvicorn', 'src.server:app', '--host', '127.0.0.1', '--port', '8000'], {
         cwd: agentDir,
         shell: true,
@@ -222,7 +250,8 @@ startAgent();
 // 5. Start Node.js WhatsApp Bot with Auto-Restart
 let botProcess = null;
 function startBot() {
-    console.log('[Runner] Spawning Node.js WhatsApp Bot...');
+    clearPort(3333);
+    console.log('[Runner] Spawning Node.js WhatsApp Bot on port 3333...');
     botProcess = spawn('node', ['server.js'], {
         cwd: waDir,
         shell: true,

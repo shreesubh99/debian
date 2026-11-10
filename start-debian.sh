@@ -18,16 +18,25 @@ fi
 
 # 1b. Force clean whatsapp bot ports and stale processes as root before launching
 echo "[System] Performing strict port and process cleanup before boot..."
-fuser -k 8000/tcp 2>/dev/null || true
-fuser -k 3333/tcp 2>/dev/null || true
-if command -v lsof &>/dev/null; then
-    kill -9 $(lsof -t -i:8000) 2>/dev/null || true
-    kill -9 $(lsof -t -i:3333) 2>/dev/null || true
-fi
+for port in 8000 3333; do
+    fuser -k -9 ${port}/tcp 2>/dev/null || /usr/sbin/fuser -k -9 ${port}/tcp 2>/dev/null || true
+    if command -v lsof &>/dev/null; then
+        lsof -ti:${port} 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    fi
+    if command -v ss &>/dev/null; then
+        for pid in $(ss -lptn "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u); do
+            kill -9 "$pid" 2>/dev/null || true
+        done
+    fi
+done
+
+pkill -9 -f "uvicorn.*8000" 2>/dev/null || true
+pkill -9 -f "src.server:app" 2>/dev/null || true
+pkill -9 -f "whatsapp" 2>/dev/null || true
+pkill -9 -f "server.js" 2>/dev/null || true
 killall -9 chrome chromium chromium-browser 2>/dev/null || true
-pkill -f -9 "whatsapp" 2>/dev/null || true
-pkill -f -9 "src.server:app" 2>/dev/null || true
-echo "[System] Cleanup completed. Ports 8000 and 3333 are now fully clear."
+sleep 1
+echo "[System] Cleanup completed. Ports 8000 and 3333 are now fully clear and ready."
 
 
 # 2. Identify the normal user (non-root) to run the servers safely

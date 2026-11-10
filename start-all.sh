@@ -12,6 +12,21 @@ if [ "$1" == "--restart" ] || [ "$1" == "-r" ] || [ "$1" == "restart" ]; then
     echo "[System] Killing previous session and restarting fresh..."
     tmux kill-session -t "${SESSION_NAME}" 2>/dev/null || true
     sleep 1
+    echo "[System] Force clearing ports 8000 and 3333 on restart..."
+    for port in 8000 3333; do
+        fuser -k -9 ${port}/tcp 2>/dev/null || /usr/sbin/fuser -k -9 ${port}/tcp 2>/dev/null || sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
+        if command -v lsof &>/dev/null; then
+            lsof -ti:${port} 2>/dev/null | xargs -r kill -9 2>/dev/null || sudo lsof -ti:${port} 2>/dev/null | sudo xargs -r kill -9 2>/dev/null || true
+        fi
+        if command -v ss &>/dev/null; then
+            for pid in $(ss -lptn "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u); do
+                kill -9 "$pid" 2>/dev/null || sudo kill -9 "$pid" 2>/dev/null || true
+            done
+        fi
+    done
+    pkill -9 -f "uvicorn.*8000" 2>/dev/null || sudo pkill -9 -f "uvicorn.*8000" 2>/dev/null || true
+    pkill -9 -f "src.server:app" 2>/dev/null || sudo pkill -9 -f "src.server:app" 2>/dev/null || true
+    echo "[System] Ports 8000 and 3333 cleared and ready."
 fi
 
 # 1. Ensure tmux is installed
