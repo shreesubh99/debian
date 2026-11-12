@@ -133,13 +133,28 @@ async function resolvePhoneNumber(jid) {
     return jid.split('@')[0];
 }
 
+// Normalize Indian mobile numbers: 91 is always treated as country code, never confused with 10-digit mobile
+function normalizePhoneNumber(mobile) {
+    if (!mobile) return '';
+    let num = String(mobile).split('@')[0].replace(/\D/g, '');
+    if (num.length === 11 && num.startsWith('0')) {
+        num = num.substring(1);
+    }
+    if (num.length === 10) {
+        return '91' + num;
+    }
+    if (num.length === 12 && num.startsWith('91')) {
+        return num;
+    }
+    num = num.replace(/^0+/, '');
+    if (num.length === 10) return '91' + num;
+    return num;
+}
+
 // Helper to resolve validated Chat ID (Always targets phone @c.us for outgoing initiate)
 async function resolveChatId(mobile) {
-    if (!mobile) return '';
-    let num = String(mobile).replace(/\D/g, '');
-    if (num.startsWith('0')) num = num.substring(1);
-    if (!num.startsWith('91')) num = '91' + num;
-    return num + '@c.us';
+    const num = normalizePhoneNumber(mobile);
+    return num ? (num + '@c.us') : '';
 }
 
 // Helper to pre-warm contact identity and register LID into WhatsApp Web in-memory store
@@ -216,16 +231,14 @@ async function safeSendMessage(chatId, content, options = {}) {
         sendOptions.sendMediaAsDocument = true;
     }
 
-    // 1. Normalize target number
+    // 1. Normalize target number (treat leading 91 strictly as country code)
     let rawNumber = '';
     let targetId = chatId;
     if (typeof targetId === 'string') {
         if (targetId.endsWith('@lid')) {
             // Already a LID JID
         } else {
-            rawNumber = targetId.split('@')[0].replace(/\D/g, '');
-            if (rawNumber.startsWith('0')) rawNumber = rawNumber.substring(1);
-            if (rawNumber.length === 10 && !rawNumber.startsWith('91')) rawNumber = '91' + rawNumber;
+            rawNumber = normalizePhoneNumber(targetId);
             targetId = rawNumber + '@c.us';
         }
     }
@@ -838,10 +851,8 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Format mobile helper
 function formatMobile(mobile) {
-    let num = String(mobile).replace(/\D/g, '');
-    if (num.startsWith('0')) num = num.substring(1);
-    if (!num.startsWith('91')) num = '91' + num;
-    return num + '@c.us';
+    const num = normalizePhoneNumber(mobile);
+    return num ? (num + '@c.us') : '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

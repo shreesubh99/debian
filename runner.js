@@ -133,6 +133,17 @@ if (nodeDepsMissing || !fs.existsSync(nodeModulesPath)) {
     }
 } else {
     console.log('[Runner] All Node.js dependencies are present and verified.');
+    const wwebjsMarker = path.join(waDir, '.wwebjs_updated_2026_11');
+    if (!fs.existsSync(wwebjsMarker)) {
+        console.log('[Runner] Updating whatsapp-web.js to latest GitHub release to patch media/PDF sending...');
+        try {
+            execSync('npm install github:pedroslopez/whatsapp-web.js --no-audit --no-fund', { cwd: waDir, stdio: 'inherit' });
+            fs.writeFileSync(wwebjsMarker, new Date().toISOString());
+            console.log('[Runner] whatsapp-web.js updated successfully.');
+        } catch (updErr) {
+            console.warn('[Runner Warning] Could not auto-update whatsapp-web.js:', updErr.message);
+        }
+    }
 }
 
 // 4. Auto-install Python dependencies if missing
