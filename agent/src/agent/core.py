@@ -57,52 +57,37 @@ def call_llm_with_routing(
     # Dynamically build providers queue: Gemini Pool -> Groq Fallbacks
     providers_queue = []
     
-    # 1. Build Gemini fallback models queue
-    gemini_models = [Config.PRIMARY_MODEL, Config.SECONDARY_MODEL]
-    extra_gemini = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-3.0-flash",
-        "gemini-3.0-flash-lite",
-        "gemini-3-flash",
-        "gemini-3-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-3.6-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-pro"
-    ]
-    for m in extra_gemini:
-        if m not in gemini_models:
+    # 1. Build Gemini fallback models queue (valid active models only)
+    gemini_models = []
+    for m in [Config.PRIMARY_MODEL, Config.SECONDARY_MODEL,
+              "gemini-2.5-flash", "gemini-2.5-flash-lite",
+              "gemini-2.0-flash", "gemini-2.0-flash-lite",
+              "gemini-1.5-flash", "gemini-2.5-pro"]:
+        if m and m not in gemini_models:
             gemini_models.append(m)
-            
+
     for idx, model_id in enumerate(gemini_models):
         if Config.GEMINI_API_KEY:
             providers_queue.append((
                 f"gemini_tier_{idx+1}_{model_id}",
                 GeminiProvider(Config.GEMINI_API_KEY, model_id),
-                4.0
+                15.0
             ))
-    
+
     # Groq Active Models in priority order
     groq_models = [
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
         "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-        "llama3-70b-8192",
-        "llama-3.1-70b-versatile"
+        "gemma2-9b-it"
     ]
-    
+
     for idx, model_id in enumerate(groq_models):
         if Config.GROQ_API_KEY:
             providers_queue.append((
-                f"groq_fallback_{idx+1}_{model_id}", 
-                GroqProvider(Config.GROQ_API_KEY, model_id), 
-                3.0
+                f"groq_fallback_{idx+1}_{model_id}",
+                GroqProvider(Config.GROQ_API_KEY, model_id),
+                10.0
             ))
             
     last_error = None

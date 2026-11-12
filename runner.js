@@ -142,6 +142,11 @@ console.log('[Runner] Checking Python dependencies...');
 const requiredModules = [
     { name: 'fastapi', check: 'fastapi' },
     { name: 'uvicorn', check: 'uvicorn' },
+    { name: 'httpx', check: 'httpx' },
+    { name: 'requests', check: 'requests' },
+    { name: 'python-dotenv', check: 'dotenv' },
+    { name: 'pydantic', check: 'pydantic' },
+    { name: 'jinja2', check: 'jinja2' },
     { name: 'google-generativeai', check: 'google.generativeai' },
     { name: 'azure-cognitiveservices-speech', check: 'azure.cognitiveservices.speech' },
     { name: 'mysql-connector-python', check: 'mysql.connector' }
@@ -225,14 +230,23 @@ for (const mod of requiredModules) {
 
 console.log('[Runner] All Python dependencies are present and verified.');
 
-// 4. Start Python Agent with Auto-Restart
+// 4. Start Python Agent with Auto-Restart & Health Watchdog
 let agentProcess = null;
+let agentRestartScheduled = false;
+let botProcess = null;
+let botRestartScheduled = false;
+let isShuttingDown = false;
+let agentHealthFailures = 0;
+
 function startAgent() {
+    if (isShuttingDown) return;
+    agentRestartScheduled = false;
+    agentHealthFailures = 0;
     clearPort(8000);
     console.log('[Runner] Spawning Python AI Agent on port 8000...');
     agentProcess = spawn(pythonCmd, ['-m', 'uvicorn', 'src.server:app', '--host', '127.0.0.1', '--port', '8000'], {
         cwd: agentDir,
-        shell: true,
+        shell: false,
         stdio: 'inherit'
     });
 
@@ -240,21 +254,55 @@ function startAgent() {
         console.error('[Runner Error] Failed to start Python Agent process:', err.message);
     });
 
-    agentProcess.on('close', (code) => {
-        console.warn(`[Runner Warning] Python AI Agent process closed with code ${code}. Respawning in 3 seconds...`);
-        setTimeout(startAgent, 3000);
+    agentProcess.on('close', (code, signal) => {
+        if (isShuttingDown) return;
+        console.warn(`[Runner Warning] Python AI Agent process closed (code: ${code}, signal: ${signal}). Respawning in 3 seconds...`);
+        if (!agentRestartScheduled) {
+            agentRestartScheduled = true;
+            setTimeout(startAgent, 3000);
+        }
     });
 }
 startAgent();
 
+// Active Health Watchdog for Python AI Agent (checks every 30s)
+const http = require('http');
+setInterval(() => {
+    if (isShuttingDown || agentRestartScheduled) return;
+    const req = http.get('http://127.0.0.1:8000/health', { timeout: 5000 }, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+            agentHealthFailures = 0;
+        } else {
+            agentHealthFailures++;
+            console.warn(`[Agent Watchdog] Unhealthy status ${res.statusCode} (${agentHealthFailures}/3)`);
+        }
+    });
+    req.on('error', () => {
+        agentHealthFailures++;
+        console.warn(`[Agent Watchdog] Python AI Agent unreachable (${agentHealthFailures}/3)`);
+        if (agentHealthFailures >= 3 && !agentRestartScheduled) {
+            console.error('[Agent Watchdog] Python AI Agent unresponsive! Force restarting...');
+            agentHealthFailures = 0;
+            try { if (agentProcess) agentProcess.kill('SIGKILL'); } catch (e) {}
+            agentRestartScheduled = true;
+            setTimeout(startAgent, 2000);
+        }
+    });
+    req.on('timeout', () => {
+        req.destroy();
+    });
+}, 30000);
+
 // 5. Start Node.js WhatsApp Bot with Auto-Restart
-let botProcess = null;
 function startBot() {
+    if (isShuttingDown) return;
+    botRestartScheduled = false;
     clearPort(3333);
     console.log('[Runner] Spawning Node.js WhatsApp Bot on port 3333...');
     botProcess = spawn('node', ['server.js'], {
         cwd: waDir,
-        shell: true,
+        shell: false,
         stdio: 'inherit'
     });
 
@@ -262,18 +310,23 @@ function startBot() {
         console.error('[Runner Error] Failed to start Node.js WhatsApp Bot process:', err.message);
     });
 
-    botProcess.on('close', (code) => {
-        console.log(`[Runner] Node.js WhatsApp Bot process closed with code ${code}. Respawning in 2 seconds...`);
-        setTimeout(startBot, 2000);
+    botProcess.on('close', (code, signal) => {
+        if (isShuttingDown) return;
+        console.log(`[Runner] Node.js WhatsApp Bot process closed (code: ${code}, signal: ${signal}). Respawning in 2 seconds...`);
+        if (!botRestartScheduled) {
+            botRestartScheduled = true;
+            setTimeout(startBot, 2000);
+        }
     });
 }
 startBot();
 
 // Handle graceful termination
 function shutdown() {
+    isShuttingDown = true;
     console.log('\n[Runner] Stopping both processes...');
-    try { if (agentProcess) agentProcess.kill(); } catch (e) {}
-    try { if (botProcess) botProcess.kill(); } catch (e) {}
+    try { if (agentProcess) agentProcess.kill('SIGTERM'); } catch (e) {}
+    try { if (botProcess) botProcess.kill('SIGTERM'); } catch (e) {}
     process.exit(0);
 }
 

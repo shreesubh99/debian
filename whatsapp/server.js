@@ -387,16 +387,31 @@ setInterval(async () => {
 // Helper to process user query using the Python AI agent Beck
 async function processAgentQuery(msg, cleanMobile, userMessage) {
     try {
-        // Forward query to the Python Agent API
-        const response = await fetch(WA_CONFIG.AGENT_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: cleanMobile,
-                message: userMessage,
-                customer_id: cleanMobile // Mobile acts as customer_id for direct database lookups
-            })
+        // Forward query to the Python Agent API (with 1 automatic retry if agent is mid-restart)
+        const payload = JSON.stringify({
+            session_id: cleanMobile,
+            message: userMessage,
+            customer_id: cleanMobile // Mobile acts as customer_id for direct database lookups
         });
+
+        let response;
+        try {
+            response = await fetch(WA_CONFIG.AGENT_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                signal: AbortSignal.timeout(45000)
+            });
+        } catch (fetchErr) {
+            console.warn(`[Agent Beck] Initial fetch failed (${fetchErr.message}). Retrying in 3.5s...`);
+            await delay(3500);
+            response = await fetch(WA_CONFIG.AGENT_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                signal: AbortSignal.timeout(45000)
+            });
+        }
 
         if (!response.ok) {
             let errText = '';
@@ -857,92 +872,93 @@ async function generatePdfFromUrl(rawUrl) {
 
     console.log(`[WhatsApp PDF] Generating from URL: ${url}`);
 
-    let page = null;
-    let tempBrowser = null;
-    let tempUserDataDir = null;
+    async function renderPageToPdf(targetPage) {
+        await targetPage.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
 
-    try {
-        // Preference 1: Reuse active waClient browser instance (zero memory overhead, fastest)
-        if (waClient && waClient.pupBrowser && typeof waClient.pupBrowser.newPage === 'function') {
-            try {
-                if (typeof waClient.pupBrowser.isConnected !== 'function' || waClient.pupBrowser.isConnected()) {
-                    page = await waClient.pupBrowser.newPage();
-                    console.log('[WhatsApp PDF] Reusing active WhatsApp Client browser tab');
-                }
-            } catch (browserErr) {
-                console.warn('[WhatsApp PDF] waClient.pupBrowser.newPage failed, falling back to clean launch:', browserErr.message);
-                page = null;
-            }
-        }
-
-        // Preference 2: Launch dedicated clean headless browser with isolated temp profile
-        if (!page) {
-            tempUserDataDir = path.join(os.tmpdir(), `pup_pdf_${Date.now()}_${Math.random().toString(36).substring(7)}`);
-            const pdfLaunchOptions = {
-                ...puppeteerConfig,
-                headless: true,
-                userDataDir: tempUserDataDir,
-                args: [
-                    ...(puppeteerConfig.args || []),
-                    '--single-process',
-                    '--no-zygote',
-                    '--disable-gpu',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox'
-                ]
-            };
-            delete pdfLaunchOptions.launcher;
-            console.log(`[WhatsApp PDF] Launching dedicated clean Puppeteer (userDataDir: ${tempUserDataDir})...`);
-            tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
-            page = await tempBrowser.newPage();
-        }
-
-        // Configure viewport
-        await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
-
-        // Override dialogs and window.print so print dialog does not block PDF export
-        await page.evaluateOnNewDocument(() => {
+        await targetPage.evaluateOnNewDocument(() => {
             window.print = () => { console.log('[Puppeteer] window.print() bypassed.'); };
             window.alert = () => {};
             window.confirm = () => true;
             window.prompt = () => null;
         });
 
-        // Fast & resilient navigation: wait for domcontentloaded
         try {
-            await page.goto(url, {
-                waitUntil: 'domcontentloaded',
-                timeout: 20000
+            await targetPage.goto(url, {
+                waitUntil: 'networkidle2',
+                timeout: 25000
             });
         } catch (navErr) {
-            console.warn('[WhatsApp PDF] Navigation warning (domcontentloaded):', navErr.message);
+            console.warn('[WhatsApp PDF] networkidle2 warning, continuing:', navErr.message);
         }
 
-        // Wait a short moment for DOM renders and fonts to settle
         try {
-            await page.evaluateHandle('document.fonts.ready', { timeout: 3000 });
-        } catch (e) {
-            // Non-blocking fallback
-        }
-        await delay(600);
+            await targetPage.evaluateHandle('document.fonts.ready', { timeout: 3000 });
+        } catch (e) {}
+        await delay(800);
 
-        await page.emulateMediaType('print');
+        await targetPage.emulateMediaType('print');
 
-        const pdfBuffer = await page.pdf({
+        const pdfBuffer = await targetPage.pdf({
             format: 'A4',
             printBackground: true,
             margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
         });
 
+        if (!pdfBuffer || pdfBuffer.length < 500) {
+            throw new Error(`Generated PDF buffer is invalid/too small (${pdfBuffer ? pdfBuffer.length : 0} bytes)`);
+        }
+
         console.log(`[WhatsApp PDF] Successfully generated PDF buffer (${pdfBuffer.length} bytes)`);
         return Buffer.from(pdfBuffer).toString('base64');
+    }
+
+    // Preference 1: Reuse active waClient browser instance (zero memory overhead, fastest)
+    if (waClient && waClient.pupBrowser && typeof waClient.pupBrowser.newPage === 'function') {
+        let sharedPage = null;
+        try {
+            if (typeof waClient.pupBrowser.isConnected !== 'function' || waClient.pupBrowser.isConnected()) {
+                sharedPage = await waClient.pupBrowser.newPage();
+                console.log('[WhatsApp PDF] Reusing active WhatsApp Client browser tab');
+                return await renderPageToPdf(sharedPage);
+            }
+        } catch (sharedErr) {
+            console.warn('[WhatsApp PDF] Shared browser PDF attempt failed, falling back to clean launch:', sharedErr.message);
+        } finally {
+            if (sharedPage) {
+                try { await sharedPage.close(); } catch (e) {}
+            }
+        }
+    }
+
+    // Preference 2: Launch dedicated clean headless browser with isolated temp profile
+    let tempBrowser = null;
+    let tempPage = null;
+    const tempUserDataDir = path.join(os.tmpdir(), `pup_pdf_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+    try {
+        const cleanArgs = (puppeteerConfig.args || []).filter(a => a !== '--single-process' && a !== '--no-zygote');
+        const pdfLaunchOptions = {
+            ...puppeteerConfig,
+            headless: true,
+            userDataDir: tempUserDataDir,
+            args: [
+                ...cleanArgs,
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        };
+        delete pdfLaunchOptions.launcher;
+        console.log(`[WhatsApp PDF] Launching dedicated clean Puppeteer (userDataDir: ${tempUserDataDir})...`);
+        tempBrowser = await cleanPuppeteer.launch(pdfLaunchOptions);
+        tempPage = await tempBrowser.newPage();
+        return await renderPageToPdf(tempPage);
     } catch (err) {
         console.error('[WhatsApp PDF] Failed to generate PDF:', err.message);
         throw err;
     } finally {
-        if (page) {
-            try { await page.close(); } catch (e) {}
+        if (tempPage) {
+            try { await tempPage.close(); } catch (e) {}
         }
         if (tempBrowser) {
             try { await tempBrowser.close(); } catch (e) {}
@@ -1183,7 +1199,13 @@ async function processQueue() {
                     try {
                         pdfBase64 = await generateReceiptPdf(parseInt(debtor_id), pdf_url || null);
                     } catch (pdfErr) {
-                        console.error(`[Queue Warning] PDF generation failed for ${mobile}, falling back to text-only:`, pdfErr.message);
+                        console.warn(`[Queue Warning] PDF generation failed for ${mobile} (${pdfErr.message}). Retrying once in 1.5s...`);
+                        try {
+                            await delay(1500);
+                            pdfBase64 = await generateReceiptPdf(parseInt(debtor_id), pdf_url || null);
+                        } catch (retryPdfErr) {
+                            console.error(`[Queue Warning] PDF retry failed for ${mobile}, falling back to text-only:`, retryPdfErr.message);
+                        }
                     }
                 }
 
@@ -1280,14 +1302,24 @@ async function processQueue() {
                 }
 
                 if (!pdfBase64) {
+                    const tryGenerateTicketPdf = async () => {
+                        if (pdf_url) return await generatePdfFromPageUrl(pdf_url);
+                        if (ticket_id) return await generateTicketPdf(parseInt(ticket_id));
+                        return null;
+                    };
                     try {
-                        if (pdf_url) {
-                            pdfBase64 = await generatePdfFromPageUrl(pdf_url);
-                        } else if (ticket_id) {
-                            pdfBase64 = await generateTicketPdf(parseInt(ticket_id));
+                        pdfBase64 = await tryGenerateTicketPdf();
+                    } catch (pdfErr) {
+                        console.warn(`[Queue Warning] Ticket/Receipt PDF generation failed for ${mobile} (${pdfErr.message}). Retrying once in 1.5s...`);
+                        try {
+                            await delay(1500);
+                            pdfBase64 = await tryGenerateTicketPdf();
+                        } catch (retryPdfErr) {
+                            console.error(`[Queue Warning] Ticket/Receipt PDF retry failed for ${mobile}:`, retryPdfErr.message);
                         }
-                        // Save newly generated PDF to disk cache to avoid duplicate rendering
-                        if (pdfBase64 && docFilename) {
+                    }
+                    // Save newly generated PDF to disk cache to avoid duplicate rendering
+                    if (pdfBase64 && docFilename) {
                             try {
                                 const isReceipt = docFilename.startsWith('Receipt_');
                                 const cacheDir = path.join(__dirname, '..', '..', 'storage', 'pdf_cache', isReceipt ? 'receipts' : 'tickets');
@@ -1302,9 +1334,6 @@ async function processQueue() {
                             } catch (diskWriteErr) {
                                 console.warn(`[WhatsApp PDF Cache Warning] Could not cache ${docFilename}:`, diskWriteErr.message);
                             }
-                        }
-                    } catch (pdfErr) {
-                        console.error(`[Queue Warning] Ticket/Receipt PDF generation failed for ${mobile}:`, pdfErr.message);
                     }
                 }
 

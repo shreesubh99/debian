@@ -1,3 +1,4 @@
+import os
 import traceback
 import time
 import threading
@@ -64,14 +65,24 @@ def schedule_admin_report():
 
 threading.Thread(target=schedule_admin_report, daemon=True).start()
 
-# Mount testing frontend static files
-# We mount the path 'testing/frontend' so we can serve HTML, CSS and JS files
-app.mount("/static", StaticFiles(directory="testing/frontend"), name="static")
+# Resolve frontend path reliably regardless of current working directory
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND_DIR = os.path.join(BASE_DIR, "testing", "frontend")
+
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 # Serve the main index.html at root
 @app.get("/")
 def read_root():
-    return FileResponse("testing/frontend/index.html")
+    index_path = os.path.join(FRONTEND_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return {"status": "ok", "service": "YTSK Python AI Agent"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "YTSK Python AI Agent"}
 
 # Chat request Pydantic model
 class ChatRequest(BaseModel):
