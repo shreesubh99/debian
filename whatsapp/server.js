@@ -183,17 +183,20 @@ async function ensureContactAndLid(targetJid) {
                     } catch (e) {}
                 }
 
-                // 4. Force Contact and Chat model creation in local store
-                if (window.Store.Contact && window.Store.Contact.gadd) {
-                    try { window.Store.Contact.gadd(actualWid); } catch (e) {}
+                // 4. Safely load Contact and Chat models in local store (never pass raw Wid to Contact.gadd)
+                if (window.Store.Contact && window.Store.Contact.find) {
+                    try { await window.Store.Contact.find(actualWid); } catch (e) {}
                 }
                 if (window.Store.Chat && window.Store.Chat.find) {
                     try { await window.Store.Chat.find(actualWid); } catch (e) {}
                 }
 
+                const widStr = actualWid._serialized || (typeof actualWid === 'string' ? actualWid : jid);
+                const lidStr = actualLid ? (actualLid._serialized || (typeof actualLid === 'string' ? actualLid : null)) : null;
+
                 return {
-                    jid: actualWid._serialized || (typeof actualWid === 'string' ? actualWid : jid),
-                    lid: actualLid ? (actualLid._serialized || (typeof actualLid === 'string' ? actualLid : null)) : null
+                    jid: (widStr && widStr.endsWith('@c.us')) ? widStr : jid,
+                    lid: lidStr || (widStr && widStr.endsWith('@lid') ? widStr : null)
                 };
             } catch (err) {
                 return { jid, lid: null, err: err.message };
@@ -208,7 +211,7 @@ async function ensureContactAndLid(targetJid) {
 
 // Helper to safely send message avoiding "No LID for user" and "getter must include an id property" errors
 async function safeSendMessage(chatId, content, options = {}) {
-    let sendOptions = { ...options };
+    let sendOptions = { sendSeen: false, ...options };
     if (content && typeof content === 'object' && content.mimetype === 'application/pdf' && sendOptions.sendMediaAsDocument === undefined) {
         sendOptions.sendMediaAsDocument = true;
     }
@@ -226,12 +229,13 @@ async function safeSendMessage(chatId, content, options = {}) {
             targetId = rawNumber + '@c.us';
         }
     }
+    const cUsJid = rawNumber ? (rawNumber + '@c.us') : targetId;
 
     // 2. Pre-warm: Query WhatsApp server to resolve and register the contact's LID in window.Store.LidUtils
     let resolvedLid = null;
     try {
         const warmResult = await ensureContactAndLid(targetId);
-        if (warmResult && warmResult.jid) {
+        if (warmResult && warmResult.jid && warmResult.jid.endsWith('@c.us')) {
             targetId = warmResult.jid;
         }
         if (warmResult && warmResult.lid) {
@@ -241,12 +245,12 @@ async function safeSendMessage(chatId, content, options = {}) {
         console.warn(`[SafeSendMessage] Pre-warm notice for ${targetId}: ${warmErr.message}`);
     }
 
-    // 3. Fallback identity resolve via getNumberId
-    if (rawNumber && !resolvedLid) {
+    // 3. Fallback identity resolve via getNumberId (only if not @lid)
+    if (rawNumber && !targetId.endsWith('@lid')) {
         try {
             if (waClient && typeof waClient.getNumberId === 'function') {
                 const numberDetails = await waClient.getNumberId(rawNumber);
-                if (numberDetails && numberDetails._serialized) {
+                if (numberDetails && numberDetails._serialized && numberDetails._serialized.endsWith('@c.us')) {
                     targetId = numberDetails._serialized;
                 }
             }
@@ -267,31 +271,34 @@ async function safeSendMessage(chatId, content, options = {}) {
         const errMsg = err?.message || '';
         console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying fallbacks...`);
 
-        // 6. Fallback A: If error is "No LID for user" and we have the resolved LID JID, send directly to LID
-        if ((errMsg.includes('No LID') || errMsg.includes('LID')) && resolvedLid) {
+        // 6. Fallback A: Try alternate JID (@c.us <-> @lid)
+        const altTarget = targetId.endsWith('@lid') ? cUsJid : resolvedLid;
+        if (altTarget && altTarget !== targetId) {
             try {
-                console.log(`[SafeSendMessage] Retrying send directly to resolved LID: ${resolvedLid}`);
-                return await waClient.sendMessage(resolvedLid, content, sendOptions);
-            } catch (lidErr) {
-                console.warn(`[SafeSendMessage] Direct send to LID ${resolvedLid} also failed: ${lidErr.message}`);
+                console.log(`[SafeSendMessage] Retrying send via alternate JID: ${altTarget}`);
+                return await waClient.sendMessage(altTarget, content, sendOptions);
+            } catch (altErr) {
+                console.warn(`[SafeSendMessage Fallback A] Send to ${altTarget} failed: ${altErr.message}`);
             }
         }
 
         // 7. Fallback B: Try via chat model sendMessage
-        try {
-            const chat = await waClient.getChatById(targetId);
-            if (chat && typeof chat.sendMessage === 'function') {
-                return await chat.sendMessage(content, sendOptions);
+        for (const candidate of [targetId, altTarget].filter(Boolean)) {
+            try {
+                const chat = await waClient.getChatById(candidate);
+                if (chat && typeof chat.sendMessage === 'function') {
+                    return await chat.sendMessage(content, sendOptions);
+                }
+            } catch (chatErr) {
+                console.warn(`[SafeSendMessage Fallback B] chat.sendMessage (${candidate}) failed: ${chatErr.message}`);
             }
-        } catch (chatErr) {
-            console.warn(`[SafeSendMessage Fallback B] chat.sendMessage failed: ${chatErr.message}`);
         }
 
-        // 8. Fallback C: Force in-page Store QueryExist re-sync and final retry
+        // 8. Fallback C: Force in-page Store QueryExist re-sync + Chat.find and final retry
         if (errMsg.includes('No LID') || errMsg.includes('Data passed to getter') || errMsg.includes('memoize')) {
             try {
                 if (waClient.pupPage) {
-                    const retryTarget = resolvedLid || targetId;
+                    const retryTarget = cUsJid || targetId;
                     await waClient.pupPage.evaluate(async (jid) => {
                         try {
                             if (window.Store && window.Store.QueryExist && window.Store.WidFactory) {
@@ -299,6 +306,9 @@ async function safeSendMessage(chatId, content, options = {}) {
                                 const res = await window.Store.QueryExist(w);
                                 if (res && res.lid && window.Store.LidUtils && window.Store.LidUtils.setLidForPn) {
                                     window.Store.LidUtils.setLidForPn(res.wid, res.lid);
+                                }
+                                if (window.Store.Chat && window.Store.Chat.find) {
+                                    await window.Store.Chat.find(w);
                                 }
                             }
                         } catch (e) {}
