@@ -97,9 +97,9 @@ class TTSRequest(BaseModel):
     text: str
     session_id: str
 
-# 1. Main Chat Endpoint
+# 1. Main Chat Endpoint (sync def so FastAPI runs blocking LLM/DB calls in threadpool without blocking /health)
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+def chat_endpoint(request: ChatRequest):
     # As requested: do not suppress errors. If an error occurs in Agent Core,
     # let it raise, catch it in a global handler, and return the FULL technical traceback.
     try:
@@ -131,7 +131,7 @@ async def chat_endpoint(request: ChatRequest):
 
 # 1.5. Text-To-Speech (TTS) Endpoint
 @app.post("/api/tts")
-async def tts_endpoint(request: TTSRequest):
+def tts_endpoint(request: TTSRequest):
     # Preprocess the text to expand station codes first
     processed_text = request.text
     try:

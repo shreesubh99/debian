@@ -12,7 +12,8 @@ def get_db_connection():
         port=Config.DB_PORT,
         user=Config.DB_USER,
         password=Config.DB_PASSWORD,
-        database=Config.DB_NAME
+        database=Config.DB_NAME,
+        connection_timeout=10
     )
     return conn
 

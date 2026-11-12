@@ -233,6 +233,8 @@ console.log('[Runner] All Python dependencies are present and verified.');
 // 4. Start Python Agent with Auto-Restart & Health Watchdog
 let agentProcess = null;
 let agentRestartScheduled = false;
+let agentStartedAt = 0;
+let agentKilledByWatchdog = false;
 let botProcess = null;
 let botRestartScheduled = false;
 let isShuttingDown = false;
@@ -242,6 +244,8 @@ function startAgent() {
     if (isShuttingDown) return;
     agentRestartScheduled = false;
     agentHealthFailures = 0;
+    agentKilledByWatchdog = false;
+    agentStartedAt = Date.now();
     clearPort(8000);
     console.log('[Runner] Spawning Python AI Agent on port 8000...');
     agentProcess = spawn(pythonCmd, ['-m', 'uvicorn', 'src.server:app', '--host', '127.0.0.1', '--port', '8000'], {
@@ -256,6 +260,9 @@ function startAgent() {
 
     agentProcess.on('close', (code, signal) => {
         if (isShuttingDown) return;
+        if (signal === 'SIGKILL' && !agentKilledByWatchdog) {
+            console.error('[Runner Alert] Python AI Agent was killed by OS (SIGKILL - usually Linux OOM/low memory or external kill).');
+        }
         console.warn(`[Runner Warning] Python AI Agent process closed (code: ${code}, signal: ${signal}). Respawning in 3 seconds...`);
         if (!agentRestartScheduled) {
             agentRestartScheduled = true;
@@ -265,26 +272,29 @@ function startAgent() {
 }
 startAgent();
 
-// Active Health Watchdog for Python AI Agent (checks every 30s)
+// Active Health Watchdog for Python AI Agent (checks every 45s after 60s boot grace period)
 const http = require('http');
 setInterval(() => {
     if (isShuttingDown || agentRestartScheduled) return;
-    const req = http.get('http://127.0.0.1:8000/health', { timeout: 5000 }, (res) => {
+    if (Date.now() - agentStartedAt < 60000) return; // Allow 60s startup grace period
+
+    const req = http.get('http://127.0.0.1:8000/health', { timeout: 10000 }, (res) => {
         res.resume();
         if (res.statusCode === 200) {
             agentHealthFailures = 0;
         } else {
             agentHealthFailures++;
-            console.warn(`[Agent Watchdog] Unhealthy status ${res.statusCode} (${agentHealthFailures}/3)`);
+            console.warn(`[Agent Watchdog] Unhealthy status ${res.statusCode} (${agentHealthFailures}/5)`);
         }
     });
     req.on('error', () => {
         agentHealthFailures++;
-        console.warn(`[Agent Watchdog] Python AI Agent unreachable (${agentHealthFailures}/3)`);
-        if (agentHealthFailures >= 3 && !agentRestartScheduled) {
-            console.error('[Agent Watchdog] Python AI Agent unresponsive! Force restarting...');
+        console.warn(`[Agent Watchdog] Python AI Agent unreachable (${agentHealthFailures}/5)`);
+        if (agentHealthFailures >= 5 && !agentRestartScheduled) {
+            console.error('[Agent Watchdog] Python AI Agent unresponsive! Restarting...');
             agentHealthFailures = 0;
-            try { if (agentProcess) agentProcess.kill('SIGKILL'); } catch (e) {}
+            agentKilledByWatchdog = true;
+            try { if (agentProcess) agentProcess.kill('SIGTERM'); } catch (e) {}
             agentRestartScheduled = true;
             setTimeout(startAgent, 2000);
         }
@@ -292,7 +302,7 @@ setInterval(() => {
     req.on('timeout', () => {
         req.destroy();
     });
-}, 30000);
+}, 45000);
 
 // 5. Start Node.js WhatsApp Bot with Auto-Restart
 function startBot() {
