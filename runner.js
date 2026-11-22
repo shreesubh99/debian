@@ -6,6 +6,46 @@ console.log('==========================================================');
 console.log('   Starting WhatsApp Bot & Python AI Agent Concurrently   ');
 console.log('==========================================================');
 
+// Master System & Process Cleanup before boot (kills old runners, orphaned servers, locks, background services)
+if (process.platform !== 'win32') {
+    console.log('[System Cleanup] Sweeping stale servers, duplicate runners, and background services...');
+    try {
+        // 1. Stop conflicting background systemd services so they don't fight with this session
+        execSync('systemctl stop ytsk-bot.service 2>/dev/null || sudo systemctl stop ytsk-bot.service 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        execSync('systemctl stop office-servers.service 2>/dev/null || sudo systemctl stop office-servers.service 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+
+        // 2. Kill duplicate/orphaned runner.js instances (preserve current PID)
+        const myPid = process.pid;
+        try {
+            const runnerPids = execSync(`pgrep -f "runner.js" 2>/dev/null || true`, { encoding: 'utf-8', shell: '/bin/bash' }).trim().split(/\s+/);
+            for (const p of runnerPids) {
+                const pidNum = parseInt(p, 10);
+                if (pidNum && pidNum !== myPid) {
+                    console.log(`[System Cleanup] Terminating duplicate runner.js process (PID: ${pidNum})...`);
+                    execSync(`kill -9 ${pidNum} 2>/dev/null || sudo kill -9 ${pidNum} 2>/dev/null || true`, { shell: '/bin/bash', stdio: 'ignore' });
+                }
+            }
+        } catch (e) {}
+
+        // 3. Kill any lingering bot/agent/browser processes
+        execSync('pkill -9 -f "src.server:app" 2>/dev/null || sudo pkill -9 -f "src.server:app" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        execSync('pkill -9 -f "uvicorn" 2>/dev/null || sudo pkill -9 -f "uvicorn" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        execSync('pkill -9 -f "whatsapp.*server.js" 2>/dev/null || sudo pkill -9 -f "whatsapp.*server.js" 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+        execSync('killall -9 chrome chromium chromium-browser 2>/dev/null || sudo killall -9 chrome chromium chromium-browser 2>/dev/null || true', { shell: '/bin/bash', stdio: 'ignore' });
+
+        // 4. Wipe stale Puppeteer session locks so Chromium starts cleanly
+        const lockTargets = [
+            path.join(__dirname, 'whatsapp', 'session', 'session', 'SingletonLock'),
+            path.join(__dirname, 'whatsapp', 'session', 'session', 'DevToolsActivePort'),
+            path.join(__dirname, 'whatsapp', '.puppeteer_cache', 'SingletonLock'),
+            path.join(__dirname, 'whatsapp', '.puppeteer_cache', 'DevToolsActivePort')
+        ];
+        for (const lockFile of lockTargets) {
+            try { if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile); } catch (e) {}
+        }
+    } catch (e) {}
+}
+
 // Robust function to forcefully free a port on Debian/Linux and Windows
 function clearPort(port) {
     if (process.platform === 'win32') {
@@ -22,7 +62,7 @@ function clearPort(port) {
         return;
     }
 
-    console.log(`[Port Cleaner] Clearing port ${port}...`);
+    console.log(`[Port Cleaner] Force clearing port ${port}...`);
     try {
         // 1. Process specific kills
         if (port === 8000) {

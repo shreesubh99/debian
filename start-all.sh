@@ -7,12 +7,22 @@
 
 SESSION_NAME="office-servers"
 
-# 0. Handle restart flag
+# 0. Handle restart flag and master pre-startup cleanup
 if [ "$1" == "--restart" ] || [ "$1" == "-r" ] || [ "$1" == "restart" ]; then
-    echo "[System] Killing previous session and restarting fresh..."
+    echo "[System] Killing previous tmux session and restarting fresh..."
     tmux kill-session -t "${SESSION_NAME}" 2>/dev/null || true
     sleep 1
-    echo "[System] Force clearing ports 8000 and 3333 on restart..."
+    echo "[System] Stopping conflicting systemd services and performing deep cleanup..."
+    if command -v systemctl &>/dev/null; then
+        systemctl stop ytsk-bot.service 2>/dev/null || sudo systemctl stop ytsk-bot.service 2>/dev/null || true
+        systemctl stop office-servers.service 2>/dev/null || sudo systemctl stop office-servers.service 2>/dev/null || true
+    fi
+    pkill -9 -f "runner.js" 2>/dev/null || sudo pkill -9 -f "runner.js" 2>/dev/null || true
+    pkill -9 -f "uvicorn" 2>/dev/null || sudo pkill -9 -f "uvicorn" 2>/dev/null || true
+    pkill -9 -f "src.server:app" 2>/dev/null || sudo pkill -9 -f "src.server:app" 2>/dev/null || true
+    pkill -9 -f "whatsapp.*server.js" 2>/dev/null || sudo pkill -9 -f "whatsapp.*server.js" 2>/dev/null || true
+    killall -9 chrome chromium chromium-browser 2>/dev/null || sudo killall -9 chrome chromium chromium-browser 2>/dev/null || true
+
     for port in 8000 3333; do
         fuser -k -9 ${port}/tcp 2>/dev/null || /usr/sbin/fuser -k -9 ${port}/tcp 2>/dev/null || sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
         if command -v lsof &>/dev/null; then
@@ -24,9 +34,7 @@ if [ "$1" == "--restart" ] || [ "$1" == "-r" ] || [ "$1" == "restart" ]; then
             done
         fi
     done
-    pkill -9 -f "uvicorn.*8000" 2>/dev/null || sudo pkill -9 -f "uvicorn.*8000" 2>/dev/null || true
-    pkill -9 -f "src.server:app" 2>/dev/null || sudo pkill -9 -f "src.server:app" 2>/dev/null || true
-    echo "[System] Ports 8000 and 3333 cleared and ready."
+    echo "[System] System and ports 8000 & 3333 cleared and ready."
 fi
 
 # 1. Ensure tmux is installed

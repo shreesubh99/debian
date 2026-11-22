@@ -86,6 +86,7 @@ const puppeteerConfig = {
         '--disable-accelerated-2d-canvas',
         '--disable-gpu',
         '--window-size=800,600',
+        '--js-flags=--max-old-space-size=256',
         '--disable-extensions',
         '--disable-component-update',
         '--disable-default-apps',
