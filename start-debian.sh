@@ -106,6 +106,6 @@ fi
 echo "[System] Booting Bot and Agent servers as user '${RUN_USER}'..."
 cd "${ROOT_DIR}"
 
-# Execute npm start as the non-root user to avoid Puppeteer profile blocks
-sudo -u "${RUN_USER}" npm start
+# Execute runner.js directly as the non-root user
+sudo -u "${RUN_USER}" node "${ROOT_DIR}/runner.js"
 
