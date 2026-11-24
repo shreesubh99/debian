@@ -1,27 +1,40 @@
 import decimal
 import datetime
-import mysql.connector
 from src.config import Config
 
-def get_db_connection():
-    # Attempt to establish a database connection using mysql-connector
-    # We do NOT use try-catch block here to suppress error, allowing database connection errors
-    # (like Access Denied, Server Down, etc.) to bubble up directly.
-    conn = mysql.connector.connect(
-        host=Config.DB_HOST,
-        port=Config.DB_PORT,
-        user=Config.DB_USER,
-        password=Config.DB_PASSWORD,
-        database=Config.DB_NAME,
-        connection_timeout=10
-    )
-    return conn
+try:
+    import mysql.connector
+    def get_db_connection():
+        return mysql.connector.connect(
+            host=Config.DB_HOST,
+            port=int(Config.DB_PORT or 3306),
+            user=Config.DB_USER,
+            password=Config.DB_PASSWORD,
+            database=Config.DB_NAME,
+            connection_timeout=10
+        )
+except ImportError:
+    import pymysql
+    import pymysql.cursors
+    def get_db_connection():
+        return pymysql.connect(
+            host=Config.DB_HOST,
+            port=int(Config.DB_PORT or 3306),
+            user=Config.DB_USER,
+            password=Config.DB_PASSWORD,
+            database=Config.DB_NAME,
+            connect_timeout=10,
+            cursorclass=pymysql.cursors.DictCursor
+        )
 
 def execute_query(query, params=None):
     # Execute a query and return results.
-    # No try-catch blocks here. Let errors propagate directly to the caller.
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor = conn.cursor(dictionary=True)
+    except TypeError:
+        # PyMySQL already uses DictCursor
+        cursor = conn.cursor()
     try:
         cursor.execute(query, params or ())
         

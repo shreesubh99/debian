@@ -280,7 +280,9 @@ async function safeSendMessage(chatId, content, options = {}) {
 
     // 5. Primary Send Attempt
     try {
-        return await waClient.sendMessage(targetId, content, sendOptions);
+        const sent = await waClient.sendMessage(targetId, content, sendOptions);
+        trackBotSentMessage(sent);
+        return sent;
     } catch (err) {
         const errMsg = err?.message || '';
         console.warn(`[SafeSendMessage Warning] Direct send failed for ${targetId}: ${errMsg}. Retrying fallbacks...`);
@@ -290,7 +292,9 @@ async function safeSendMessage(chatId, content, options = {}) {
         if (altTarget && altTarget !== targetId) {
             try {
                 console.log(`[SafeSendMessage] Retrying send via alternate JID: ${altTarget}`);
-                return await waClient.sendMessage(altTarget, content, sendOptions);
+                const sent = await waClient.sendMessage(altTarget, content, sendOptions);
+                trackBotSentMessage(sent);
+                return sent;
             } catch (altErr) {
                 console.warn(`[SafeSendMessage Fallback A] Send to ${altTarget} failed: ${altErr.message}`);
             }
@@ -301,7 +305,9 @@ async function safeSendMessage(chatId, content, options = {}) {
             try {
                 const chat = await waClient.getChatById(candidate);
                 if (chat && typeof chat.sendMessage === 'function') {
-                    return await chat.sendMessage(content, sendOptions);
+                    const sent = await chat.sendMessage(content, sendOptions);
+                    trackBotSentMessage(sent);
+                    return sent;
                 }
             } catch (chatErr) {
                 console.warn(`[SafeSendMessage Fallback B] chat.sendMessage (${candidate}) failed: ${chatErr.message}`);
@@ -327,7 +333,9 @@ async function safeSendMessage(chatId, content, options = {}) {
                             }
                         } catch (e) {}
                     }, retryTarget);
-                    return await waClient.sendMessage(retryTarget, content, sendOptions);
+                    const sent = await waClient.sendMessage(retryTarget, content, sendOptions);
+                    trackBotSentMessage(sent);
+                    return sent;
                 }
             } catch (evalErr) {
                 console.error(`[SafeSendMessage Fallback C] In-browser LID re-sync retry failed: ${evalErr.message}`);
@@ -340,30 +348,50 @@ async function safeSendMessage(chatId, content, options = {}) {
 
 // Helper to safely reply/send message avoiding "No LID for user" errors
 async function safeReply(msg, content, options = {}) {
+    let result = null;
     try {
-        return await msg.reply(content, undefined, options);
+        result = await msg.reply(content, undefined, options);
     } catch (err) {
         console.warn(`[SafeReply Warning] msg.reply failed (${err.message}). Attempting fallback methods...`);
         try {
             const chat = await msg.getChat();
-            return await chat.sendMessage(content, options);
+            result = await chat.sendMessage(content, options);
         } catch (chatErr) {
             console.warn(`[SafeReply Warning] chat.sendMessage failed (${chatErr.message}). Attempting direct sendMessage...`);
             try {
-                return await safeSendMessage(msg.from, content, options);
+                result = await safeSendMessage(msg.from, content, options);
             } catch (waErr) {
                 const cleanPhone = await resolvePhoneNumber(msg.from);
                 const resolvedChatId = await resolveChatId(cleanPhone);
-                return await safeSendMessage(resolvedChatId, content, options);
+                result = await safeSendMessage(resolvedChatId, content, options);
             }
         }
     }
+    trackBotSentMessage(result);
+    return result;
 }
 
 let isWaReady = false;
 let currentQrDataUrl = null;
 let waState = 'INITIALIZING';
 let waStateDetail = 'Starting client...';
+
+// Bot Sent Message Tracker (prevents bot from triggering human takeover on its own replies)
+const botSentMessageIds = new Set();
+function trackBotSentMessage(sentMsg) {
+    if (sentMsg && sentMsg.id && sentMsg.id._serialized) {
+        botSentMessageIds.add(sentMsg.id._serialized);
+        setTimeout(() => botSentMessageIds.delete(sentMsg.id._serialized), 60000);
+    }
+}
+
+// Human Takeover Tracker: Operator chat pauses AI for 30 mins
+const humanTakeoverMap = new Map(); // key: cleanMobile, value: expirationTimestamp
+const HUMAN_TAKEOVER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+
+// Message Debounce / Buffering: Waits 5.5s for user to finish typing multi-part messages
+const userMessageBuffers = new Map(); // key: cleanMobile, value: { messages: [], lastMsg: msg, timer: null }
+const DEBOUNCE_WAIT_MS = 5500; // 5.5 seconds debounce window
 
 // Concurrency Queue Settings
 const activeSessions = new Map(); // key: cleanMobile, value: lastActiveTimestamp
@@ -456,6 +484,12 @@ async function processAgentQuery(msg, cleanMobile, userMessage) {
         
         if (data.status === 'success' && data.data && data.data.response) {
             const agentReply = data.data.response;
+            
+            // Check if agent determined to remain silent (personal message / DO_NOT_REPLY)
+            if (agentReply.includes('[DO_NOT_REPLY]') || agentReply.trim() === '') {
+                console.log(`[Agent Beck] Response is [DO_NOT_REPLY] or empty for ${cleanMobile}. AI will remain silent.`);
+                return;
+            }
             
             // Show typing state to the user before sending
             try {
@@ -719,10 +753,64 @@ function createWhatsAppClient() {
         return false; // Allowed: genuine human customer message
     }
 
-    // Incoming Message Listener with Concurrency Queuing (Integrates Python AI Agent Beck)
+    // A. Human Takeover Listener: Detects manual replies by staff/owner on phone or WhatsApp Web
+    waClient.on('message_create', async (msg) => {
+        try {
+            if (!msg.fromMe) return;
+
+            // Skip status broadcasts and group messages
+            if (msg.to && (msg.to.endsWith('@g.us') || msg.to === 'status@broadcast')) {
+                return;
+            }
+
+            const msgId = msg.id && msg.id._serialized ? msg.id._serialized : null;
+            if (msgId && botSentMessageIds.has(msgId)) {
+                botSentMessageIds.delete(msgId);
+                return; // Sent by AI Bot code, ignore!
+            }
+
+            const targetMobile = await resolvePhoneNumber(msg.to);
+            if (!targetMobile) return;
+
+            const text = (msg.body || '').trim().toLowerCase();
+
+            // Manual controls for operator:
+            if (text === '#bot on' || text === '#ai on' || text === '#resume') {
+                humanTakeoverMap.delete(targetMobile);
+                console.log(`[Human Takeover] Operator manually re-enabled AI for ${targetMobile}`);
+                return;
+            }
+            if (text === '#bot off' || text === '#ai off' || text === '#pause') {
+                humanTakeoverMap.set(targetMobile, Date.now() + 24 * 60 * 60 * 1000);
+                console.log(`[Human Takeover] Operator manually paused AI for 24h for ${targetMobile}`);
+                return;
+            }
+
+            // Real human operator replied to customer on WhatsApp -> Mute AI for this customer for 30 minutes
+            humanTakeoverMap.set(targetMobile, Date.now() + HUMAN_TAKEOVER_TIMEOUT);
+            console.log(`[Human Takeover] Manual outgoing message detected to ${targetMobile}. AI muted for 30 minutes.`);
+
+            // Clear any pending debounce buffer for this customer
+            if (userMessageBuffers.has(targetMobile)) {
+                const buf = userMessageBuffers.get(targetMobile);
+                if (buf && buf.timer) clearTimeout(buf.timer);
+                userMessageBuffers.delete(targetMobile);
+            }
+        } catch (e) {
+            console.error('[Human Takeover Handler Error]', e.message);
+        }
+    });
+
+    // B. Incoming Message Listener with Debouncing & Buffering
     waClient.on('message', async (msg) => {
         // Skip group messages and status broadcasts
         if (msg.from.endsWith('@g.us') || msg.from === 'status@broadcast') {
+            return;
+        }
+
+        // Ignore incoming images and stickers completely
+        if (msg.type === 'image' || msg.type === 'sticker' || (msg.hasMedia && msg.type === 'image')) {
+            console.log(`[Media Filter] Ignored incoming image/sticker from ${msg.from}`);
             return;
         }
 
@@ -738,6 +826,17 @@ function createWhatsAppClient() {
         const cleanMobile = await resolvePhoneNumber(msg.from);
         console.log(`[Queue Manager] Incoming message from ${cleanMobile}: "${userMessage}"`);
 
+        // Check Human Takeover status: If human operator recently chatted, keep AI muted!
+        if (humanTakeoverMap.has(cleanMobile)) {
+            const expiry = humanTakeoverMap.get(cleanMobile);
+            if (Date.now() < expiry) {
+                console.log(`[Human Takeover] AI is paused for ${cleanMobile} due to recent operator manual chat. Ignoring message.`);
+                return;
+            } else {
+                humanTakeoverMap.delete(cleanMobile);
+            }
+        }
+
         // Anti-Ban Opt-Out / Unsubscribe Handler (Intercepts STOP/Unsubscribe to prevent spam reports)
         const optOutKeywords = /^(stop|unsubscribe|band karo|mat bhejo|ruko|dont send|not interested|cancel)$/i;
         if (optOutKeywords.test(userMessage.trim())) {
@@ -747,11 +846,55 @@ function createWhatsAppClient() {
             return;
         }
 
+        // SMART DEBOUNCE / BUFFERING:
+        // When a user types and sends multiple short messages in a row (e.g. "bhai", "mera tkt cancel kar do"),
+        // buffer them and wait 5.5s so AI receives the complete coherent thought before generating a reply.
+        let sessionBuffer = userMessageBuffers.get(cleanMobile);
+        if (!sessionBuffer) {
+            sessionBuffer = {
+                messages: [userMessage],
+                lastMsg: msg,
+                timer: null
+            };
+            userMessageBuffers.set(cleanMobile, sessionBuffer);
+        } else {
+            sessionBuffer.messages.push(userMessage);
+            sessionBuffer.lastMsg = msg;
+            if (sessionBuffer.timer) {
+                clearTimeout(sessionBuffer.timer);
+                sessionBuffer.timer = null;
+            }
+        }
+
+        sessionBuffer.timer = setTimeout(async () => {
+            const buf = userMessageBuffers.get(cleanMobile);
+            userMessageBuffers.delete(cleanMobile);
+            if (!buf) return;
+            const combinedMessage = buf.messages.join(' ').trim();
+            const finalMsg = buf.lastMsg;
+            console.log(`[Debounce Complete] Combined message from ${cleanMobile} (${buf.messages.length} parts): "${combinedMessage}"`);
+            await handleIncomingDebouncedMessage(finalMsg, cleanMobile, combinedMessage);
+        }, DEBOUNCE_WAIT_MS);
+    });
+
+    // C. Debounced Message Handler (Routes to Live PNR Status or AI Agent with Queue)
+    async function handleIncomingDebouncedMessage(msg, cleanMobile, userMessage) {
+        // Re-check Human Takeover in case operator replied during debounce delay
+        if (humanTakeoverMap.has(cleanMobile)) {
+            const expiry = humanTakeoverMap.get(cleanMobile);
+            if (Date.now() < expiry) {
+                console.log(`[Human Takeover] Operator took over during debounce for ${cleanMobile}. AI muted.`);
+                return;
+            }
+        }
+
         // Check if this is a PNR Live Status Query
         const pnrMatch = userMessage.match(/\b\d{10}\b/);
         const hasPnrKeywords = /pnr|status|current|live|check|bata|btao|position|confirm|ticket/i.test(userMessage);
+        const isCancelRequest = /cancel|radd|kancel|refund|wapas/i.test(userMessage);
         
-        if (pnrMatch && (userMessage.trim().length === 10 || hasPnrKeywords)) {
+        // Only intercept directly as PNR status if it's NOT a cancellation request
+        if (pnrMatch && !isCancelRequest && (userMessage.trim().length === 10 || hasPnrKeywords)) {
             const pnr = pnrMatch[0];
             console.log(`[PNR Interceptor] Detected PNR Live query for PNR: ${pnr} from ${cleanMobile}`);
             try {
@@ -802,7 +945,7 @@ function createWhatsAppClient() {
                 console.log(`[Queue Manager] Customer ${cleanMobile} is already in the waiting queue. Ignoring duplicate queue entry.`);
             }
         }
-    });
+    }
 
     waClient.on('disconnected', async (reason) => {
         isWaReady = false;

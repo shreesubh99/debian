@@ -510,11 +510,81 @@ def generate_admin_report() -> str:
     report += "\nReport Generated Automatically on " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n"
     return report
 
+def is_personal_casual_chat(msg: str) -> bool:
+    """
+    Detects if a message is personal informal talk between friends/family/owner
+    (e.g., 'kaha ho', 'ghar pe ho', 'call karo', 'free ho', 'bhai phone utha', 'khana khaya')
+    with NO travel, booking, ticket, ledger, or office service intent.
+    """
+    msg_clean = (msg or "").strip().lower()
+    if not msg_clean:
+        return False
+        
+    # 1. Business / travel keywords: if any of these are present, it is NOT purely personal chat
+    business_keywords = [
+        "ticket", "tkt", "train", "flight", "pnr", "railway", "bus", "hotel", "visa", 
+        "currency", "balance", "ledger", "rate", "seat", "shree", "shubh", "travel", 
+        "booking", "cancel", "status", "hisab", "payment", "rupee", "rs", "bhav",
+        "station", "ghazipur", "delhi", "varanasi", "mumbai", "kolkata", "irctc", "rac",
+        "waiting", "confirm", "available", "package", "tour", "fare", "due", "debtor",
+        "account", "invoice", "refund", "batao", "dekhna", "check"
+    ]
+    if any(bw in msg_clean for bw in business_keywords):
+        return False
+        
+    # 2. Personal query patterns (common colloquial Hinglish & Hindi phrases)
+    import re
+    personal_patterns = [
+        r"\bkaha(?:n)?\s+ho\b",
+        r"\bkahan\s+hai\b",
+        r"\bghar\s+(?:pe|par)\s+ho\b",
+        r"\bghar\s+kab\b",
+        r"\bcall\s+(?:karo|karna|me|back|uthao|uthana)\b",
+        r"\bphone\s+(?:karo|uthao|uthana|utha)\b",
+        r"\bfree\s+ho\b",
+        r"\bfree\s+hoke\b",
+        r"\bkhana\s+kha(?:ya|liya)?\b",
+        r"\bkya\s+kar\s+rahe\s+ho\b",
+        r"\bkab\s+aaoge\b",
+        r"\bkab\s+miloge\b",
+        r"\baaj\s+milte\b",
+        r"\baap\s+kaise\s+ho\s+bhai\b",
+        r"\bkaise\s+ho\s+bhai\b",
+        r"\bbol\s+bhai\b",
+        r"\bhaan\s+bhai\b",
+        r"\bsuno\s+bhai\b",
+        r"\bbhai\s+call\b",
+        r"\bbhai\s+phone\b",
+        r"\bkidhar\s+ho\b",
+        r"\bkidhar\s+hai\b",
+        r"\bso\s+gaye\s+kya\b"
+    ]
+    for pat in personal_patterns:
+        if re.search(pat, msg_clean):
+            return True
+            
+    return False
+
 def process_agent_message(session_id: str, user_message: str, customer_id: str = None) -> Dict[str, Any]:
     """
     Coordinates session memory, model routing, tool execution, and response validation.
     """
     mobile_to_check = customer_id or session_id
+    
+    # 0. Fast Pre-Check: If this is purely personal casual conversation for phone owner, remain silent
+    if is_personal_casual_chat(user_message):
+        print(f"[Personal Chat Pre-Filter] Message '{user_message}' from {mobile_to_check} identified as personal chat. Remaining silent.")
+        return {
+            "session_id": session_id,
+            "response": "[DO_NOT_REPLY]",
+            "provider": "System",
+            "model": "System_Personal_Filter",
+            "response_time_ms": 1.0,
+            "fallback_used": False,
+            "fallback_reason": None,
+            "called_tools": [],
+            "timeline": []
+        }
     
     # 0. Retrieve customer's interest from DB first (instant local fetch)
     detected_interest = "None"
@@ -751,8 +821,10 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
             prompt_instruction = (
                 "Analyze the user's message. If the user is telling their name (e.g. 'Sajal', 'My name is Amit', 'अमित कुमार'), "
                 "extract ONLY the name itself, with correct capitalization, and absolutely no other text.\n"
-                "If the user is ignoring the name prompt and asking a query, booking a service, or talking about something else "
-                "(e.g. 'ticket price?', 'train timing', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'."
+                "If the user is sending a purely personal or casual message to the phone owner (e.g. 'kaha ho', 'ghar pe ho', 'call karo', 'free ho', 'bhai phone utha', 'khana khaya') "
+                "that is NOT related to travel, booking, tickets, or office queries, return ONLY the word 'Personal'.\n"
+                "If the user is asking a travel/booking query, booking a service, or talking about tickets/flights/trains/balance/pnr "
+                "(e.g. 'ticket price?', 'train timing', 'tkt cancel kar do', 'tkt ka kya hua', 'Hwh to Asr train', 'booking details', 'pnr'), return ONLY the word 'Unrelated'."
             )
             
         extraction_prompt = [
@@ -877,6 +949,19 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
                     "called_tools": [],
                     "timeline": timeline
                 }
+        elif extracted_name and extracted_name.lower() == "personal":
+            print(f"[Personal Chat Extraction] Message '{user_message}' from {mobile_to_check} classified as personal. Returning [DO_NOT_REPLY].")
+            return {
+                "session_id": session_id,
+                "response": "[DO_NOT_REPLY]",
+                "provider": "System",
+                "model": "System_Personal_Filter",
+                "response_time_ms": (time.time() - start_time_extract) * 1000,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "called_tools": [],
+                "timeline": timeline
+            }
         elif extracted_name and extracted_name.lower() == "unrelated":
             if not has_name:
                 # If the user sent a query instead of their name, don't block them!
@@ -887,54 +972,66 @@ def process_agent_message(session_id: str, user_message: str, customer_id: str =
                 print(f"[Name Check] User sent unrelated query: '{user_message}'. Bypassing block. Reminder count: {count}")
             pass
         else:
-            # It is a simple greeting (like Hi/Hello) or name could not be extracted.
-            if state != "waiting_for_name":
-                # Prompt them for their name (State 1)
-                memory.update_context(session_id, "state", "waiting_for_name")
-                memory.update_context(session_id, "name_reminder_count", 0)
-                
-                if is_hindi_input:
-                    greeting = "नमस्ते! श्री शुभ ट्रेवल्स में आपका स्वागत है। आगे की बातचीत को सुचारू और विश्वासपूर्ण बनाने के लिए कृपया करके अपना नाम बता दीजिए।"
-                else:
-                    greeting = "Hello! Shree Shubh Travels mein aapka swagat hai. Aage ki baat-jeet ko smooth aur helpful banane ke liye, please mujhe apna naam bata dijiye."
-                
-                memory.add_message(session_id, role="user", content=user_message)
-                memory.add_message(session_id, role="model", content=greeting)
-                save_conversation_to_file(session_id)
-                
-                return {
-                    "session_id": session_id,
-                    "response": greeting,
-                    "provider": "System",
-                    "model": "System_PreCheck",
-                    "response_time_ms": (time.time() - start_time_extract) * 1000,
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "called_tools": [],
-                    "timeline": timeline
-                }
-            else:
-                # They were already prompted, but replied with another greeting or invalid name text. Ask again.
-                if is_hindi_input:
-                    ask_again = "कृपया अपना सही नाम बताएं ताकि हम बातचीत शुरू कर सकें।"
-                else:
-                    ask_again = "Please apna sahi naam bataiye taaki hum aage baat kar sakein."
+            # Check if this is an actual greeting (Hi/Hello/Namaste/etc.)
+            import re
+            is_greeting = any(re.search(rf"\b{g}\b", user_message.lower()) for g in [
+                "hi", "hello", "hey", "namaste", "pranam", "hlo", "swagat", "good morning", 
+                "good evening", "good afternoon", "shree shubh travel", "radhe radhe"
+            ])
+            
+            if is_greeting:
+                if state != "waiting_for_name":
+                    # Prompt them for their name (State 1)
+                    memory.update_context(session_id, "state", "waiting_for_name")
+                    memory.update_context(session_id, "name_reminder_count", 0)
                     
-                memory.add_message(session_id, role="user", content=user_message)
-                memory.add_message(session_id, role="model", content=ask_again)
-                save_conversation_to_file(session_id)
-                
-                return {
-                    "session_id": session_id,
-                    "response": ask_again,
-                    "provider": "System",
-                    "model": "System_PreCheck",
-                    "response_time_ms": (time.time() - start_time_extract) * 1000,
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "called_tools": [],
-                    "timeline": timeline
-                }
+                    if is_hindi_input:
+                        greeting = "नमस्ते! श्री शुभ ट्रेवल्स में आपका स्वागत है। आगे की बातचीत को सुचारू और विश्वासपूर्ण बनाने के लिए कृपया करके अपना नाम बता दीजिए।"
+                    else:
+                        greeting = "Hello! Shree Shubh Travels mein aapka swagat hai. Aage ki baat-jeet ko smooth aur helpful banane ke liye, please mujhe apna naam bata dijiye."
+                    
+                    memory.add_message(session_id, role="user", content=user_message)
+                    memory.add_message(session_id, role="model", content=greeting)
+                    save_conversation_to_file(session_id)
+                    
+                    return {
+                        "session_id": session_id,
+                        "response": greeting,
+                        "provider": "System",
+                        "model": "System_PreCheck",
+                        "response_time_ms": (time.time() - start_time_extract) * 1000,
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "called_tools": [],
+                        "timeline": timeline
+                    }
+                else:
+                    # They were already prompted, but replied with another greeting or invalid name text. Ask again.
+                    if is_hindi_input:
+                        ask_again = "कृपया अपना सही नाम बताएं ताकि हम बातचीत शुरू कर सकें।"
+                    else:
+                        ask_again = "Please apna sahi naam bataiye taaki hum aage baat kar sakein."
+                        
+                    memory.add_message(session_id, role="user", content=user_message)
+                    memory.add_message(session_id, role="model", content=ask_again)
+                    save_conversation_to_file(session_id)
+                    
+                    return {
+                        "session_id": session_id,
+                        "response": ask_again,
+                        "provider": "System",
+                        "model": "System_PreCheck",
+                        "response_time_ms": (time.time() - start_time_extract) * 1000,
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "called_tools": [],
+                        "timeline": timeline
+                    }
+            else:
+                # User sent something that wasn't a greeting and wasn't a name (e.g. query)
+                # Do NOT block them by spamming greeting or asking for name! Pass through to main agent.
+                print(f"[Name Check] User message is not a greeting: '{user_message}'. Passing through to main agent.")
+                pass
 
     timeline = []
     start_time = time.time()
